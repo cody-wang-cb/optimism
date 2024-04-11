@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/zlib"
 
+	"github.com/andybalholm/brotli"
 	"github.com/ethereum-optimism/optimism/op-node/rollup/derive"
 )
 
@@ -23,9 +24,12 @@ type ShadowCompressor struct {
 
 	buf      bytes.Buffer
 	compress *zlib.Writer
+	brotliCompress *brotli.Writer
 
 	shadowBuf      bytes.Buffer
 	shadowCompress *zlib.Writer
+
+	compressAlgo string
 
 	fullErr error
 
@@ -53,6 +57,14 @@ func NewShadowCompressor(config Config) (derive.Compressor, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// add brotli
+	c.brotliCompress = brotli.NewWriterLevel(
+		&c.buf,
+		brotli.BestCompression,
+	)
+
+	c.compressAlgo = config.CompressionAlgo
 
 	c.bound = safeCompressionOverhead
 	return c, nil
@@ -85,10 +97,17 @@ func (t *ShadowCompressor) Write(p []byte) (int, error) {
 		}
 	}
 	t.bound = newBound
+
+	if t.compressAlgo == "brotli" {
+		return t.brotliCompress.Write(p)
+	}
 	return t.compress.Write(p)
 }
 
 func (t *ShadowCompressor) Close() error {
+	if t.compressAlgo == "brotli" {
+		return t.brotliCompress.Close()
+	}
 	return t.compress.Close()
 }
 
@@ -98,7 +117,11 @@ func (t *ShadowCompressor) Read(p []byte) (int, error) {
 
 func (t *ShadowCompressor) Reset() {
 	t.buf.Reset()
-	t.compress.Reset(&t.buf)
+	if t.compressAlgo == "brotli" {
+		t.brotliCompress.Reset(&t.buf)
+	} else {
+		t.compress.Reset(&t.buf)
+	}
 	t.shadowBuf.Reset()
 	t.shadowCompress.Reset(&t.shadowBuf)
 	t.fullErr = nil
@@ -110,6 +133,9 @@ func (t *ShadowCompressor) Len() int {
 }
 
 func (t *ShadowCompressor) Flush() error {
+	if t.compressAlgo == "brotli" {
+		return t.brotliCompress.Flush()
+	}
 	return t.compress.Flush()
 }
 
