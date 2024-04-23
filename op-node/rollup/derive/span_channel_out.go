@@ -8,6 +8,8 @@ import (
 	"io"
 	"math/big"
 
+	"github.com/DataDog/zstd"
+
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rlp"
 
@@ -26,10 +28,6 @@ type SpanChannelOut struct {
 	// lastCompressedRLPSize tracks the *uncompressed* size of the last RLP buffer that was compressed
 	// it is used to measure the growth of the RLP buffer when adding a new batch to optimize compression
 	lastCompressedRLPSize int
-	// compressed contains compressed data for making output frames
-	compressed *bytes.Buffer
-	// compress is the zlib writer for the channel
-	compressor *zlib.Writer
 	// target is the target size of the compressed data
 	target uint64
 	// closed indicates if the channel is closed
@@ -38,6 +36,19 @@ type SpanChannelOut struct {
 	full error
 	// spanBatch is the batch being built, which immutably holds genesis timestamp and chain ID, but otherwise can be reset
 	spanBatch *SpanBatch
+
+	// Compressor related
+	compressorAlgo string
+
+	// compressed contains compressed data for making output frames
+	zlibCompressed *bytes.Buffer
+	// compress is the zlib writer for the channel
+	zlibCompressor *zlib.Writer
+
+	zstdCompressed *bytes.Buffer
+	zstdCompressor *zstd.Writer
+
+	zstdLevel uint64
 }
 
 func (co *SpanChannelOut) ID() ChannelID {
@@ -49,23 +60,46 @@ func (co *SpanChannelOut) setRandomID() error {
 	return err
 }
 
-func NewSpanChannelOut(genesisTimestamp uint64, chainID *big.Int, targetOutputSize uint64) (*SpanChannelOut, error) {
+func NewSpanChannelOut(genesisTimestamp uint64, chainID *big.Int, targetOutputSize uint64, compressorAlgo string, zstdLevel uint64) (*SpanChannelOut, error) {
 	c := &SpanChannelOut{
 		id:         ChannelID{},
 		frame:      0,
 		spanBatch:  NewSpanBatch(genesisTimestamp, chainID),
 		rlp:        [2]*bytes.Buffer{{}, {}},
-		compressed: &bytes.Buffer{},
+		zlibCompressed: &bytes.Buffer{},
+		zstdCompressed: &bytes.Buffer{},
 		target:     targetOutputSize,
+		compressorAlgo: compressorAlgo,
+		zstdLevel: zstdLevel,
+
 	}
 	var err error
 	if err = c.setRandomID(); err != nil {
 		return nil, err
 	}
-	if c.compressor, err = zlib.NewWriterLevel(c.compressed, zlib.BestCompression); err != nil {
+
+	// zlib compressor
+	if c.zlibCompressor, err = zlib.NewWriterLevel(c.zlibCompressed, zlib.BestCompression); err != nil {
 		return nil, err
 	}
+
+	// zstd compressor
+	c.zstdCompressor = zstd.NewWriterLevel(c.zstdCompressed, int(zstdLevel))
+
 	return c, nil
+}
+
+func (co *SpanChannelOut) compressorReset() {
+	if co.compressorAlgo == "zlib" {
+		co.zlibCompressed.Reset()
+		co.zlibCompressor.Reset(co.zlibCompressed)
+	} else if co.compressorAlgo == "zstd" {
+		co.zstdCompressed.Reset()
+		// no reset, start a new zstd compressor
+		co.zstdCompressor = zstd.NewWriterLevel(co.zstdCompressed, int(co.zstdLevel))
+	} else {
+		panic("unknown compressor")
+	}
 }
 
 func (co *SpanChannelOut) Reset() error {
@@ -75,8 +109,7 @@ func (co *SpanChannelOut) Reset() error {
 	co.rlp[0].Reset()
 	co.rlp[1].Reset()
 	co.lastCompressedRLPSize = 0
-	co.compressed.Reset()
-	co.compressor.Reset(co.compressed)
+	co.compressorReset()
 	co.spanBatch = NewSpanBatch(co.spanBatch.GenesisTimestamp, co.spanBatch.ChainID)
 	// setting the new randomID is the only part of the reset that can fail
 	return co.setRandomID()
@@ -153,7 +186,14 @@ func (co *SpanChannelOut) AddSingularBatch(batch *SingularBatch, seqNum uint64) 
 	// if the compressed data *plus* the new rlp data is under the target size, return early
 	// this optimizes out cases where the compressor will obviously come in under the target size
 	rlpGrowth := co.activeRLP().Len() - co.lastCompressedRLPSize
-	if uint64(co.compressed.Len()+rlpGrowth) < co.target {
+	var compressedLen int
+	if co.compressorAlgo == "zlib" {
+		compressedLen = co.zlibCompressed.Len()
+	} else if co.compressorAlgo == "zstd" {
+		compressedLen = co.zstdCompressed.Len()
+	}
+
+	if uint64(compressedLen+rlpGrowth) < co.target {
 		return nil
 	}
 
@@ -186,13 +226,22 @@ func (co *SpanChannelOut) AddSingularBatch(batch *SingularBatch, seqNum uint64) 
 // compress compresses the active RLP buffer and checks if the compressed data is over the target size.
 // it resets all the compression buffers because Span Batches aren't meant to be compressed incrementally.
 func (co *SpanChannelOut) compress() error {
-	co.compressed.Reset()
-	co.compressor.Reset(co.compressed)
-	if _, err := co.compressor.Write(co.activeRLP().Bytes()); err != nil {
-		return err
-	}
-	if err := co.compressor.Close(); err != nil {
-		return err
+	co.compressorReset()
+	// write out this whole implementation for 3 different compressors
+	if co.compressorAlgo == "zlib" {
+		if _, err := co.zlibCompressor.Write(co.activeRLP().Bytes()); err != nil {
+			return err
+		}
+		if err := co.zlibCompressor.Close(); err != nil {
+			return err
+		}
+	} else if co.compressorAlgo == "zstd" {
+		if _, err := co.zstdCompressor.Write(co.activeRLP().Bytes()); err != nil {
+			return err
+		}
+		if err := co.zstdCompressor.Close(); err != nil {
+			return err
+		}
 	}
 	co.checkFull()
 	return nil
@@ -207,7 +256,11 @@ func (co *SpanChannelOut) InputBytes() int {
 // Span Channel Out does not provide early output, so this will always be 0 until the channel is closed or full
 func (co *SpanChannelOut) ReadyBytes() int {
 	if co.closed || co.FullErr() != nil {
-		return co.compressed.Len()
+		if co.compressorAlgo == "zlib" {
+			return co.zlibCompressed.Len()
+		} else if co.compressorAlgo == "zstd" {
+			return co.zstdCompressed.Len()
+		}
 	}
 	return 0
 }
@@ -225,8 +278,15 @@ func (co *SpanChannelOut) checkFull() {
 	if co.full != nil {
 		return
 	}
-	if uint64(co.compressed.Len()) >= co.target {
-		co.full = ErrCompressorFull
+
+	if co.compressorAlgo == "zlib" {
+		if uint64(co.zlibCompressed.Len()) >= co.target {
+			co.full = ErrCompressorFull
+		}
+	} else if co.compressorAlgo == "zstd" {
+		if uint64(co.zstdCompressed.Len()) >= co.target {
+			co.full = ErrCompressorFull
+		}
 	}
 }
 
@@ -264,8 +324,14 @@ func (co *SpanChannelOut) OutputFrame(w *bytes.Buffer, maxSize uint64) (uint16, 
 
 	f := createEmptyFrame(co.id, co.frame, co.ReadyBytes(), co.closed, maxSize)
 
-	if _, err := io.ReadFull(co.compressed, f.Data); err != nil {
-		return 0, err
+	if co.compressorAlgo == "zlib" {
+		if _, err := io.ReadFull(co.zlibCompressed, f.Data); err != nil {
+			return 0, err
+		}
+	} else if co.compressorAlgo == "zstd" {
+		if _, err := io.ReadFull(co.zstdCompressed, f.Data); err != nil {
+			return 0, err
+		}
 	}
 
 	if err := f.MarshalBinary(w); err != nil {

@@ -16,6 +16,9 @@ type Config struct {
 	// Kind of compressor to use. Must be one of KindKeys. If unset, NewCompressor
 	// will default to RatioKind.
 	Kind string
+
+	CompressionAlgo string
+	ZstdLevel int
 }
 
 func (c Config) NewCompressor() (derive.Compressor, error) {

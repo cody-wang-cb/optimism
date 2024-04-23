@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ethereum-optimism/optimism/op-chain-ops/deployer"
 	op_e2e "github.com/ethereum-optimism/optimism/op-e2e"
 	"github.com/ethereum-optimism/optimism/op-e2e/e2eutils/challenger"
 	"github.com/ethereum-optimism/optimism/op-e2e/e2eutils/disputegame"
@@ -67,7 +66,7 @@ func TestOutputAlphabetGame_ChallengerWins(t *testing.T) {
 	claim.WaitForCountered(ctx)
 	game.LogGameData(ctx)
 
-	sys.TimeTravelClock.AdvanceTime(game.GameDuration(ctx))
+	sys.TimeTravelClock.AdvanceTime(game.MaxClockDuration(ctx))
 	require.NoError(t, wait.ForNextBlock(ctx, l1Client))
 	game.WaitForGameStatus(ctx, disputegame.StatusChallengerWins)
 	game.LogGameData(ctx)
@@ -109,7 +108,7 @@ func TestOutputAlphabetGame_ReclaimBond(t *testing.T) {
 	balance = game.WethBalance(ctx, game.Addr())
 	require.Truef(t, balance.Cmp(big.NewInt(0)) > 0, "Expected game balance to be above zero")
 
-	sys.TimeTravelClock.AdvanceTime(game.GameDuration(ctx))
+	sys.TimeTravelClock.AdvanceTime(game.MaxClockDuration(ctx))
 	require.NoError(t, wait.ForNextBlock(ctx, l1Client))
 	game.WaitForGameStatus(ctx, disputegame.StatusChallengerWins)
 	game.LogGameData(ctx)
@@ -119,7 +118,7 @@ func TestOutputAlphabetGame_ReclaimBond(t *testing.T) {
 	require.Truef(t, game.AvailableCredit(ctx, alice).Cmp(big.NewInt(0)) > 0, "Expected alice credit to be above zero")
 
 	// The actor should have no credit available because all its bonds were paid to Alice.
-	actorCredit := game.AvailableCredit(ctx, deployer.TestAddress)
+	actorCredit := game.AvailableCredit(ctx, disputegame.TestAddress)
 	require.True(t, actorCredit.Cmp(big.NewInt(0)) == 0, "Expected alice available credit to be zero")
 
 	// Advance the time past the weth unlock delay
@@ -160,7 +159,7 @@ func TestOutputAlphabetGame_ValidOutputRoot(t *testing.T) {
 		game.LogGameData(ctx)
 	}
 
-	sys.TimeTravelClock.AdvanceTime(game.GameDuration(ctx))
+	sys.TimeTravelClock.AdvanceTime(game.MaxClockDuration(ctx))
 	require.NoError(t, wait.ForNextBlock(ctx, l1Client))
 	game.WaitForGameStatus(ctx, disputegame.StatusDefenderWins)
 }
@@ -210,7 +209,7 @@ func TestChallengerCompleteExhaustiveDisputeGame(t *testing.T) {
 		// Wait for 4 blocks of no challenger responses. The challenger may still be stepping on invalid claims at max depth
 		game.WaitForInactivity(ctx, 4, false)
 
-		gameDuration := game.GameDuration(ctx)
+		gameDuration := game.MaxClockDuration(ctx)
 		sys.TimeTravelClock.AdvanceTime(gameDuration)
 		require.NoError(t, wait.ForNextBlock(ctx, l1Client))
 
@@ -287,7 +286,7 @@ func TestOutputAlphabetGame_FreeloaderEarnsNothing(t *testing.T) {
 	}
 
 	game.LogGameData(ctx)
-	sys.TimeTravelClock.AdvanceTime(game.GameDuration(ctx))
+	sys.TimeTravelClock.AdvanceTime(game.MaxClockDuration(ctx))
 	require.NoError(t, wait.ForNextBlock(ctx, l1Client))
 	game.WaitForGameStatus(ctx, disputegame.StatusDefenderWins)
 

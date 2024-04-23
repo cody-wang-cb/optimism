@@ -27,6 +27,8 @@ type ShadowCompressor struct {
 	shadowBuf      bytes.Buffer
 	shadowCompress *zlib.Writer
 
+	compressAlgo string
+
 	fullErr error
 
 	bound uint64 // best known upperbound on the size of the compressed output
@@ -53,6 +55,8 @@ func NewShadowCompressor(config Config) (derive.Compressor, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	c.compressAlgo = config.CompressionAlgo
 
 	c.bound = safeCompressionOverhead
 	return c, nil

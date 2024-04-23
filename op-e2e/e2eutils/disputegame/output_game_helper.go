@@ -161,9 +161,9 @@ func (g *OutputGameHelper) correctOutputRoot(ctx context.Context, pos types.Posi
 	return outputRoot
 }
 
-func (g *OutputGameHelper) GameDuration(ctx context.Context) time.Duration {
-	duration, err := g.game.GameDuration(&bind.CallOpts{Context: ctx})
-	g.require.NoError(err, "failed to get game duration")
+func (g *OutputGameHelper) MaxClockDuration(ctx context.Context) time.Duration {
+	duration, err := g.game.MaxClockDuration(&bind.CallOpts{Context: ctx})
+	g.require.NoError(err, "failed to get max clock duration")
 	return time.Duration(duration) * time.Second
 }
 
@@ -620,7 +620,7 @@ func (g *OutputGameHelper) StepFails(claimIdx int64, isAttack bool, stateData []
 
 // ResolveClaim resolves a single subgame
 func (g *OutputGameHelper) ResolveClaim(ctx context.Context, claimIdx int64) {
-	tx, err := g.game.ResolveClaim(g.opts, big.NewInt(claimIdx))
+	tx, err := g.game.ResolveClaim(g.opts, big.NewInt(claimIdx), common.Big0)
 	g.require.NoError(err, "ResolveClaim transaction did not send")
 	_, err = wait.ForReceiptOK(ctx, g.client, tx.Hash())
 	g.require.NoError(err, "ResolveClaim transaction was not OK")
@@ -702,8 +702,7 @@ func (g *OutputGameHelper) uploadPreimage(ctx context.Context, data *types.Preim
 
 func (g *OutputGameHelper) oracle(ctx context.Context) *contracts.PreimageOracleContract {
 	caller := batching.NewMultiCaller(g.system.NodeClient("l1").Client(), batching.DefaultBatchSize)
-	contract, err := contracts.NewFaultDisputeGameContract(contractMetrics.NoopContractMetrics, g.addr, caller)
-	g.require.NoError(err, "Failed to create game contract")
+	contract := contracts.NewFaultDisputeGameContract(contractMetrics.NoopContractMetrics, g.addr, caller)
 	oracle, err := contract.GetOracle(ctx)
 	g.require.NoError(err, "Failed to create oracle contract")
 	return oracle
