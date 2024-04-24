@@ -9,8 +9,7 @@ import (
 	"math/big"
 
 	"github.com/DataDog/zstd"
-	"github.com/google/brotli/go/cbrotli"
-
+	"github.com/andybalholm/brotli"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rlp"
 
@@ -47,13 +46,13 @@ type SpanChannelOut struct {
 	zlibCompressor *zlib.Writer
 
 	brotliCompressed *bytes.Buffer
-	brotliCompressor *cbrotli.Writer
+	brotliCompressor *brotli.Writer
 
 	zstdCompressed *bytes.Buffer
 	zstdCompressor *zstd.Writer
 
 	brotliQuality int
-	brotliWindow int
+	brotliWindow  int
 }
 
 func (co *SpanChannelOut) ID() ChannelID {
@@ -67,17 +66,17 @@ func (co *SpanChannelOut) setRandomID() error {
 
 func NewSpanChannelOut(genesisTimestamp uint64, chainID *big.Int, targetOutputSize uint64, compressorAlgo string, brotliQuality int, brotliWindow int) (*SpanChannelOut, error) {
 	c := &SpanChannelOut{
-		id:         ChannelID{},
-		frame:      0,
-		spanBatch:  NewSpanBatch(genesisTimestamp, chainID),
-		rlp:        [2]*bytes.Buffer{{}, {}},
-		zlibCompressed: &bytes.Buffer{},
+		id:               ChannelID{},
+		frame:            0,
+		spanBatch:        NewSpanBatch(genesisTimestamp, chainID),
+		rlp:              [2]*bytes.Buffer{{}, {}},
+		zlibCompressed:   &bytes.Buffer{},
 		brotliCompressed: &bytes.Buffer{},
-		zstdCompressed: &bytes.Buffer{},
-		target:     targetOutputSize,
-		compressorAlgo: compressorAlgo,
-		brotliQuality: brotliQuality,
-		brotliWindow: brotliWindow,
+		zstdCompressed:   &bytes.Buffer{},
+		target:           targetOutputSize,
+		compressorAlgo:   compressorAlgo,
+		brotliQuality:    brotliQuality,
+		brotliWindow:     brotliWindow,
 	}
 	var err error
 	if err = c.setRandomID(); err != nil {
@@ -90,9 +89,9 @@ func NewSpanChannelOut(genesisTimestamp uint64, chainID *big.Int, targetOutputSi
 	}
 
 	// brotli compressor
-	c.brotliCompressor = cbrotli.NewWriter(
+	c.brotliCompressor = brotli.NewWriterOptions(
 		c.brotliCompressed,
-		cbrotli.WriterOptions{
+		brotli.WriterOptions{
 			Quality: brotliQuality,
 			LGWin:   brotliWindow,
 		},
@@ -100,7 +99,6 @@ func NewSpanChannelOut(genesisTimestamp uint64, chainID *big.Int, targetOutputSi
 
 	// zstd compressor
 	c.zstdCompressor = zstd.NewWriterLevel(c.zstdCompressed, 22)
-
 
 	return c, nil
 }
@@ -111,9 +109,9 @@ func (co *SpanChannelOut) compressorReset() {
 		co.zlibCompressor.Reset(co.zlibCompressed)
 	} else if co.compressorAlgo == "brotli" {
 		co.brotliCompressed.Reset()
-		co.brotliCompressor = cbrotli.NewWriter(
+		co.brotliCompressor = brotli.NewWriterOptions(
 			co.brotliCompressed,
-			cbrotli.WriterOptions{
+			brotli.WriterOptions{
 				Quality: co.brotliQuality,
 				LGWin:   co.brotliWindow,
 			},
