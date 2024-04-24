@@ -52,6 +52,8 @@ type SpanChannelOut struct {
 	file int
 
 	zstdLevel uint64
+	dict      string
+	level     uint64
 }
 
 func (co *SpanChannelOut) ID() ChannelID {
@@ -74,6 +76,8 @@ func NewSpanChannelOut(genesisTimestamp uint64, chainID *big.Int, targetOutputSi
 		target:         targetOutputSize,
 		compressorAlgo: compressorAlgo,
 		zstdLevel:      zstdLevel,
+		dict:           zstdDictPath,
+		level:          zstdLevel,
 	}
 	var err error
 	if err = c.setRandomID(); err != nil {
@@ -106,8 +110,17 @@ func (co *SpanChannelOut) compressorReset() {
 		co.zlibCompressor.Reset(co.zlibCompressed)
 	} else if co.compressorAlgo == "zstd" {
 		co.zstdCompressed.Reset()
-		// no reset, start a new zstd compressor
-		co.zstdCompressor = zstd.NewWriterLevel(co.zstdCompressed, int(co.zstdLevel))
+		if co.dict != "" {
+			// load the dictionary from the path
+			dict, err := os.ReadFile(co.dict)
+			if err != nil {
+				panic(fmt.Errorf("failed to read zstd dictionary from %s: %w", err))
+			}
+			co.zstdCompressor = zstd.NewWriterLevelDict(co.zstdCompressed, int(co.zstdLevel), dict)
+		} else {
+			co.zstdCompressor = zstd.NewWriterLevel(co.zstdCompressed, int(co.zstdLevel))
+		}
+
 	} else {
 		panic("unknown compressor")
 	}
