@@ -119,6 +119,10 @@ op-dispute-mon: ## Builds op-dispute-mon binary
 	make -C ./op-dispute-mon op-dispute-mon
 .PHONY: op-dispute-mon
 
+op-supernode: ## Builds op-supernode binary
+	just $(JUSTFLAGS) ./op-supernode/op-supernode
+.PHONY: op-supernode
+
 op-program: ## Builds op-program binary
 	make -C ./op-program op-program
 .PHONY: op-program
@@ -206,7 +210,6 @@ TEST_PKGS := \
 	./packages/contracts-bedrock/scripts/checks/... \
 	./op-dripper/... \
 	./devnet-sdk/... \
-	./op-acceptance-tests/... \
 	./kurtosis-devnet/... \
 	./op-devstack/... \
 	./op-deployer/pkg/deployer/artifacts/... \
@@ -229,6 +232,9 @@ RPC_TEST_PKGS := \
 	./op-deployer/pkg/deployer/opcm/... \
 	./op-deployer/pkg/deployer/pipeline/... \
 	./op-deployer/pkg/deployer/upgrade/...
+
+# All test packages used by CI (combination of all package groups)
+ALL_TEST_PACKAGES := $(TEST_PKGS) $(RPC_TEST_PKGS) $(FRAUD_PROOF_TEST_PKGS)
 
 # Common test environment variables
 # For setting PARALLEL, nproc is for linux, sysctl for Mac and then fallback to 4 if neither is available
@@ -262,7 +268,9 @@ go-tests-short: $(TEST_DEPS) ## Runs comprehensive Go tests with -short flag
 	go test -short -parallel=$$PARALLEL -timeout=$(TEST_TIMEOUT) $(TEST_PKGS)
 .PHONY: go-tests-short
 
-go-tests-short-ci: ## Runs short Go tests with gotestsum for CI (assumes deps built by CI)
+# Internal target for running Go tests with gotestsum for CI
+# Usage: make _go-tests-ci-internal GO_TEST_FLAGS="-short"
+_go-tests-ci-internal:
 	@echo "Setting up test directories..."
 	mkdir -p ./tmp/test-results ./tmp/testlogs
 	@echo "Running Go tests with gotestsum..."
@@ -273,23 +281,16 @@ go-tests-short-ci: ## Runs short Go tests with gotestsum for CI (assumes deps bu
 		--jsonfile=./tmp/testlogs/log.json \
 		--rerun-fails=3 \
 		--rerun-fails-max-failures=50 \
-		--packages="$(TEST_PKGS) $(RPC_TEST_PKGS) $(FRAUD_PROOF_TEST_PKGS)" \
-		-- -parallel=$$PARALLEL -coverprofile=coverage.out -short -timeout=$(TEST_TIMEOUT) -tags="ci"
+		--packages="$(ALL_TEST_PACKAGES)" \
+		-- -parallel=$$PARALLEL -coverprofile=coverage.out $(GO_TEST_FLAGS) -timeout=$(TEST_TIMEOUT) -tags="ci";
+.PHONY: _go-tests-ci-internal
+
+go-tests-short-ci: ## Runs short Go tests with gotestsum for CI (assumes deps built by CI)
+	$(MAKE) _go-tests-ci-internal GO_TEST_FLAGS="-short"
 .PHONY: go-tests-short-ci
 
 go-tests-ci: ## Runs comprehensive Go tests with gotestsum for CI (assumes deps built by CI)
-	@echo "Setting up test directories..."
-	mkdir -p ./tmp/test-results ./tmp/testlogs
-	@echo "Running Go tests with gotestsum..."
-	$(DEFAULT_TEST_ENV_VARS) && \
-	$(CI_ENV_VARS) && \
-	gotestsum --format=testname \
-		--junitfile=./tmp/test-results/results.xml \
-		--jsonfile=./tmp/testlogs/log.json \
-		--rerun-fails=3 \
-		--rerun-fails-max-failures=50 \
-		--packages="$(TEST_PKGS) $(RPC_TEST_PKGS) $(FRAUD_PROOF_TEST_PKGS)" \
-		-- -parallel=$$PARALLEL -coverprofile=coverage.out -timeout=$(TEST_TIMEOUT) -tags="ci"
+	$(MAKE) _go-tests-ci-internal GO_TEST_FLAGS=""
 .PHONY: go-tests-ci
 
 go-tests-fraud-proofs-ci: ## Runs fraud proofs Go tests with gotestsum for CI (assumes deps built by CI)

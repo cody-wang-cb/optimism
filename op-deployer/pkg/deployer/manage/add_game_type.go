@@ -7,6 +7,8 @@ import (
 	"math/big"
 	"os"
 
+	"github.com/ethereum-optimism/optimism/op-service/ioutil"
+
 	"github.com/ethereum-optimism/optimism/op-service/cliutil"
 
 	"github.com/ethereum-optimism/optimism/op-deployer/pkg/deployer/pipeline"
@@ -150,10 +152,9 @@ func AddGameTypeCLI(cliCtx *cli.Context) error {
 
 	initialBond, err := cliutil.BigIntFlag(cliCtx, InitialBondFlag.Name)
 	if err != nil {
-		cfg.InitialBond = initialBond
-	} else {
 		return fmt.Errorf("failed to parse initial bond: %w", err)
 	}
+	cfg.InitialBond = initialBond
 
 	if err := cfg.Check(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
@@ -246,7 +247,7 @@ func AddGameType(ctx context.Context, cfg AddGameTypeConfig) (opcm.AddGameTypeOu
 
 	lgr := cfg.Logger
 
-	artifactsFS, err := artifacts.Download(ctx, cfg.ArtifactsLocator, artifacts.BarProgressor(), cfg.CacheDir)
+	artifactsFS, err := artifacts.Download(ctx, cfg.ArtifactsLocator, ioutil.BarProgressor(), cfg.CacheDir)
 	if err != nil {
 		return output, nil, fmt.Errorf("failed to download artifacts: %w", err)
 	}

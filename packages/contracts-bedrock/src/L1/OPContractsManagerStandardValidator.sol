@@ -8,6 +8,9 @@ import { Duration } from "src/dispute/lib/LibUDT.sol";
 import { Predeploys } from "src/libraries/Predeploys.sol";
 import { Constants } from "src/libraries/Constants.sol";
 import { Hash } from "src/dispute/lib/Types.sol";
+import { Features } from "src/libraries/Features.sol";
+import { DevFeatures } from "src/libraries/DevFeatures.sol";
+import { LibGameArgs } from "src/dispute/lib/LibGameArgs.sol";
 
 // Interfaces
 import { ISystemConfig } from "interfaces/L1/ISystemConfig.sol";
@@ -28,6 +31,7 @@ import { IPreimageOracle } from "interfaces/cannon/IPreimageOracle.sol";
 import { IMIPS64 } from "interfaces/cannon/IMIPS64.sol";
 import { ISemver } from "interfaces/universal/ISemver.sol";
 import { IProxyAdminOwnedBase } from "interfaces/L1/IProxyAdminOwnedBase.sol";
+import { IBigStepper } from "interfaces/dispute/IBigStepper.sol";
 
 /// @title OPContractsManagerStandardValidator
 /// @notice This contract is used to validate the configuration of the L1 contracts of an OP Stack chain.
@@ -36,8 +40,8 @@ import { IProxyAdminOwnedBase } from "interfaces/L1/IProxyAdminOwnedBase.sol";
 /// before and after an upgrade.
 contract OPContractsManagerStandardValidator is ISemver {
     /// @notice The semantic version of the OPContractsManagerStandardValidator contract.
-    /// @custom:semver 1.6.0
-    string public constant version = "1.6.0";
+    /// @custom:semver 2.0.0
+    string public constant version = "2.0.0";
 
     /// @notice The SuperchainConfig contract.
     ISuperchainConfig public superchainConfig;
@@ -58,6 +62,9 @@ contract OPContractsManagerStandardValidator is ISemver {
 
     /// @notice The OptimismPortal implementation address.
     address public optimismPortalImpl;
+
+    /// @notice The OptimismPortalInterop implementation address.
+    address public optimismPortalInteropImpl;
 
     /// @notice The ETHLockbox implementation address.
     address public ethLockboxImpl;
@@ -86,10 +93,14 @@ contract OPContractsManagerStandardValidator is ISemver {
     /// @notice The MIPS implementation address.
     address public mipsImpl;
 
+    /// @notice Bitmap of development features, verification may depend on these features.
+    bytes32 public devFeatureBitmap;
+
     /// @notice Struct containing the implementation addresses of the L1 contracts.
     struct Implementations {
         address l1ERC721BridgeImpl;
         address optimismPortalImpl;
+        address optimismPortalInteropImpl;
         address ethLockboxImpl;
         address systemConfigImpl;
         address optimismMintableERC20FactoryImpl;
@@ -107,6 +118,7 @@ contract OPContractsManagerStandardValidator is ISemver {
         ISystemConfig sysCfg;
         bytes32 absolutePrestate;
         uint256 l2ChainID;
+        address proposer;
     }
 
     /// @notice Struct containing override parameters for the validation process.
@@ -115,22 +127,45 @@ contract OPContractsManagerStandardValidator is ISemver {
         address challenger;
     }
 
+    /// @notice Struct containing the unified game args for a dispute game implementation.
+    struct DisputeGameImplementation {
+        address gameAddress;
+        uint256 maxGameDepth;
+        uint256 splitDepth;
+        Duration maxClockDuration;
+        Duration clockExtension;
+        GameType gameType;
+        // extra args
+        uint256 l2SequenceNumber;
+        // dispute-game v2 game args
+        Claim absolutePrestate;
+        IBigStepper vm;
+        IAnchorStateRegistry asr;
+        IDelayedWETH weth;
+        uint256 l2ChainId;
+        address challenger;
+        address proposer;
+    }
+
     /// @notice Constructor for the OPContractsManagerStandardValidator contract.
     constructor(
         Implementations memory _implementations,
         ISuperchainConfig _superchainConfig,
         address _l1PAOMultisig,
         address _challenger,
-        uint256 _withdrawalDelaySeconds
+        uint256 _withdrawalDelaySeconds,
+        bytes32 _devFeatureBitmap
     ) {
         superchainConfig = _superchainConfig;
         l1PAOMultisig = _l1PAOMultisig;
         challenger = _challenger;
         withdrawalDelaySeconds = _withdrawalDelaySeconds;
+        devFeatureBitmap = _devFeatureBitmap;
 
         // Set implementation addresses from struct
         l1ERC721BridgeImpl = _implementations.l1ERC721BridgeImpl;
         optimismPortalImpl = _implementations.optimismPortalImpl;
+        optimismPortalInteropImpl = _implementations.optimismPortalInteropImpl;
         ethLockboxImpl = _implementations.ethLockboxImpl;
         systemConfigImpl = _implementations.systemConfigImpl;
         optimismMintableERC20FactoryImpl = _implementations.optimismMintableERC20FactoryImpl;
@@ -174,69 +209,18 @@ contract OPContractsManagerStandardValidator is ISemver {
         return challenger;
     }
 
-    /// @notice Returns the expected SystemConfig version.
-    function systemConfigVersion() public pure returns (string memory) {
-        return "3.4.0";
-    }
-
-    /// @notice Returns the expected OptimismPortal version.
-    function optimismPortalVersion() public pure returns (string memory) {
-        return "4.6.0";
-    }
-
-    /// @notice Returns the expected L1CrossDomainMessenger version.
-    function l1CrossDomainMessengerVersion() public pure returns (string memory) {
-        return "2.9.0";
-    }
-
-    /// @notice Returns the expected L1ERC721Bridge version.
-    function l1ERC721BridgeVersion() public pure returns (string memory) {
-        return "2.7.0";
-    }
-
-    /// @notice Returns the expected L1StandardBridge version.
-    function l1StandardBridgeVersion() public pure returns (string memory) {
-        return "2.6.0";
-    }
-
-    /// @notice Returns the expected MIPS version.
-    function mipsVersion() public pure returns (string memory) {
-        return "1.8.0";
-    }
-
-    /// @notice Returns the expected OptimismMintableERC20Factory version.
-    function optimismMintableERC20FactoryVersion() public pure returns (string memory) {
-        return "1.10.1";
-    }
-
-    /// @notice Returns the expected DisputeGameFactory version.
-    function disputeGameFactoryVersion() public pure returns (string memory) {
-        return "1.2.0";
-    }
-
-    /// @notice Returns the expected AnchorStateRegistry version.
-    function anchorStateRegistryVersion() public pure returns (string memory) {
-        return "3.5.0";
-    }
-
-    /// @notice Returns the expected DelayedWETH version.
-    function delayedWETHVersion() public pure returns (string memory) {
-        return "1.5.0";
-    }
-
     /// @notice Returns the expected PermissionedDisputeGame version.
-    function permissionedDisputeGameVersion() public pure returns (string memory) {
-        return "1.8.0";
+    function permissionedDisputeGameVersion() public view returns (string memory) {
+        if (DevFeatures.isDevFeatureEnabled(devFeatureBitmap, DevFeatures.DEPLOY_V2_DISPUTE_GAMES)) {
+            return "2.2.0";
+        } else {
+            return "1.8.0";
+        }
     }
 
     /// @notice Returns the expected PreimageOracle version.
     function preimageOracleVersion() public pure returns (string memory) {
         return "1.1.4";
-    }
-
-    /// @notice Returns the expected ETHLockbox version.
-    function ethLockboxVersion() public pure returns (string memory) {
-        return "1.2.0";
     }
 
     /// @notice Internal function to get version from any contract implementing ISemver.
@@ -286,8 +270,9 @@ contract OPContractsManagerStandardValidator is ISemver {
         virtual
         returns (string memory)
     {
-        _errors =
-            internalRequire(LibString.eq(getVersion(address(_sysCfg)), systemConfigVersion()), "SYSCON-10", _errors);
+        _errors = internalRequire(
+            LibString.eq(getVersion(address(_sysCfg)), getVersion(systemConfigImpl)), "SYSCON-10", _errors
+        );
         _errors = internalRequire(_sysCfg.gasLimit() <= uint64(500_000_000), "SYSCON-20", _errors);
         _errors = internalRequire(_sysCfg.scalar() != 0, "SYSCON-30", _errors);
         _errors =
@@ -319,7 +304,7 @@ contract OPContractsManagerStandardValidator is ISemver {
     {
         IL1CrossDomainMessenger _messenger = IL1CrossDomainMessenger(_sysCfg.l1CrossDomainMessenger());
         _errors = internalRequire(
-            LibString.eq(getVersion(address(_messenger)), l1CrossDomainMessengerVersion()), "L1xDM-10", _errors
+            LibString.eq(getVersion(address(_messenger)), getVersion(l1CrossDomainMessengerImpl)), "L1xDM-10", _errors
         );
         _errors = internalRequire(
             getProxyImplementation(_admin, address(_messenger)) == l1CrossDomainMessengerImpl, "L1xDM-20", _errors
@@ -351,8 +336,9 @@ contract OPContractsManagerStandardValidator is ISemver {
         returns (string memory)
     {
         IL1StandardBridge _bridge = IL1StandardBridge(payable(_sysCfg.l1StandardBridge()));
-        _errors =
-            internalRequire(LibString.eq(getVersion(address(_bridge)), l1StandardBridgeVersion()), "L1SB-10", _errors);
+        _errors = internalRequire(
+            LibString.eq(getVersion(address(_bridge)), getVersion(l1StandardBridgeImpl)), "L1SB-10", _errors
+        );
         _errors = internalRequire(
             getProxyImplementation(_admin, address(_bridge)) == l1StandardBridgeImpl, "L1SB-20", _errors
         );
@@ -380,7 +366,9 @@ contract OPContractsManagerStandardValidator is ISemver {
     {
         IOptimismMintableERC20Factory _factory = IOptimismMintableERC20Factory(_sysCfg.optimismMintableERC20Factory());
         _errors = internalRequire(
-            LibString.eq(getVersion(address(_factory)), optimismMintableERC20FactoryVersion()), "MERC20F-10", _errors
+            LibString.eq(getVersion(address(_factory)), getVersion(optimismMintableERC20FactoryImpl)),
+            "MERC20F-10",
+            _errors
         );
         _errors = internalRequire(
             getProxyImplementation(_admin, address(_factory)) == optimismMintableERC20FactoryImpl, "MERC20F-20", _errors
@@ -403,8 +391,9 @@ contract OPContractsManagerStandardValidator is ISemver {
         returns (string memory)
     {
         IL1ERC721Bridge _bridge = IL1ERC721Bridge(_sysCfg.l1ERC721Bridge());
-        _errors =
-            internalRequire(LibString.eq(getVersion(address(_bridge)), l1ERC721BridgeVersion()), "L721B-10", _errors);
+        _errors = internalRequire(
+            LibString.eq(getVersion(address(_bridge)), getVersion(l1ERC721BridgeImpl)), "L721B-10", _errors
+        );
         _errors =
             internalRequire(getProxyImplementation(_admin, address(_bridge)) == l1ERC721BridgeImpl, "L721B-20", _errors);
 
@@ -429,11 +418,24 @@ contract OPContractsManagerStandardValidator is ISemver {
         returns (string memory)
     {
         IOptimismPortal2 _portal = IOptimismPortal2(payable(_sysCfg.optimismPortal()));
-        _errors =
-            internalRequire(LibString.eq(getVersion(address(_portal)), optimismPortalVersion()), "PORTAL-10", _errors);
-        _errors = internalRequire(
-            getProxyImplementation(_admin, address(_portal)) == optimismPortalImpl, "PORTAL-20", _errors
-        );
+
+        if (DevFeatures.isDevFeatureEnabled(devFeatureBitmap, DevFeatures.OPTIMISM_PORTAL_INTEROP)) {
+            _errors = internalRequire(
+                LibString.eq(getVersion(address(_portal)), string.concat(getVersion(optimismPortalInteropImpl))),
+                "PORTAL-10",
+                _errors
+            );
+            _errors = internalRequire(
+                getProxyImplementation(_admin, address(_portal)) == optimismPortalInteropImpl, "PORTAL-20", _errors
+            );
+        } else {
+            _errors = internalRequire(
+                LibString.eq(getVersion(address(_portal)), getVersion(optimismPortalImpl)), "PORTAL-10", _errors
+            );
+            _errors = internalRequire(
+                getProxyImplementation(_admin, address(_portal)) == optimismPortalImpl, "PORTAL-20", _errors
+            );
+        }
 
         IDisputeGameFactory _dgf = IDisputeGameFactory(_sysCfg.disputeGameFactory());
         _errors = internalRequire(address(_portal.disputeGameFactory()) == address(_dgf), "PORTAL-30", _errors);
@@ -456,8 +458,14 @@ contract OPContractsManagerStandardValidator is ISemver {
         IOptimismPortal2 _portal = IOptimismPortal2(payable(_sysCfg.optimismPortal()));
         IETHLockbox _lockbox = IETHLockbox(_portal.ethLockbox());
 
-        _errors =
-            internalRequire(LibString.eq(getVersion(address(_lockbox)), ethLockboxVersion()), "LOCKBOX-10", _errors);
+        // If this chain isn't using the ETHLockbox, skip the validation.
+        if (!_sysCfg.isFeatureEnabled(Features.ETH_LOCKBOX)) {
+            return _errors;
+        }
+
+        _errors = internalRequire(
+            LibString.eq(getVersion(address(_lockbox)), getVersion(ethLockboxImpl)), "LOCKBOX-10", _errors
+        );
         _errors =
             internalRequire(getProxyImplementation(_admin, address(_lockbox)) == ethLockboxImpl, "LOCKBOX-20", _errors);
         _errors = internalRequire(getProxyAdmin(address(_lockbox)) == _admin, "LOCKBOX-30", _errors);
@@ -479,8 +487,9 @@ contract OPContractsManagerStandardValidator is ISemver {
     {
         address _l1PAOMultisig = expectedL1PAOMultisig(_overrides);
         IDisputeGameFactory _factory = IDisputeGameFactory(_sysCfg.disputeGameFactory());
-        _errors =
-            internalRequire(LibString.eq(getVersion(address(_factory)), disputeGameFactoryVersion()), "DF-10", _errors);
+        _errors = internalRequire(
+            LibString.eq(getVersion(address(_factory)), getVersion(disputeGameFactoryImpl)), "DF-10", _errors
+        );
         _errors = internalRequire(
             getProxyImplementation(_admin, address(_factory)) == disputeGameFactoryImpl, "DF-20", _errors
         );
@@ -496,39 +505,43 @@ contract OPContractsManagerStandardValidator is ISemver {
         bytes32 _absolutePrestate,
         uint256 _l2ChainID,
         IProxyAdmin _admin,
+        address _proposer,
         ValidationOverrides memory _overrides
     )
         internal
         view
         returns (string memory)
     {
-        IDisputeGameFactory _factory = IDisputeGameFactory(_sysCfg.disputeGameFactory());
-        IPermissionedDisputeGame _game =
-            IPermissionedDisputeGame(address(_factory.gameImpls(GameTypes.PERMISSIONED_CANNON)));
+        GameType gameType = GameTypes.PERMISSIONED_CANNON;
+        string memory errorPrefix = "PDDG";
 
-        if (address(_game) == address(0)) {
-            _errors = internalRequire(false, "PDDG-10", _errors);
-            // Return early to avoid reverting, since this means that there is no valid game impl
-            // for this game type.
+        // Collect game implementation parameters
+        DisputeGameImplementation memory gameImpl;
+        bool failedToGetImpl = false;
+        (gameImpl, _errors, failedToGetImpl) = getGameImplementation(_errors, gameType, _sysCfg, errorPrefix);
+        if (failedToGetImpl) {
+            // Return early on failure to avoid trying to validate an invalid dispute game
             return _errors;
         }
 
         _errors = assertValidDisputeGame(
-            _errors,
-            _sysCfg,
-            _game,
-            _factory,
-            _absolutePrestate,
-            _l2ChainID,
-            _admin,
-            GameTypes.PERMISSIONED_CANNON,
-            _overrides,
-            "PDDG"
+            DisputeGameValidationArgs({
+                errors: _errors,
+                sysCfg: _sysCfg,
+                game: gameImpl,
+                absolutePrestate: _absolutePrestate,
+                l2ChainID: _l2ChainID,
+                admin: _admin,
+                gameType: gameType,
+                overrides: _overrides,
+                errorPrefix: errorPrefix
+            })
         );
 
         // Challenger is specific to the PermissionedDisputeGame contract.
         address _challenger = expectedChallenger(_overrides);
-        _errors = internalRequire(_game.challenger() == _challenger, "PDDG-130", _errors);
+        _errors = internalRequire(gameImpl.challenger == _challenger, "PDDG-130", _errors);
+        _errors = internalRequire(gameImpl.proposer == _proposer, "PDDG-140", _errors);
 
         return _errors;
     }
@@ -546,87 +559,132 @@ contract OPContractsManagerStandardValidator is ISemver {
         view
         returns (string memory)
     {
-        IDisputeGameFactory _factory = IDisputeGameFactory(_sysCfg.disputeGameFactory());
-        IPermissionedDisputeGame _game = IPermissionedDisputeGame(address(_factory.gameImpls(GameTypes.CANNON)));
+        GameType gameType = GameTypes.CANNON;
+        string memory errorPrefix = "PLDG";
 
-        if (address(_game) == address(0)) {
-            _errors = internalRequire(false, "PLDG-10", _errors);
-            // Return early to avoid reverting, since this means that there is no valid game impl
-            // for this game type.
+        // Collect game implementation parameters
+        DisputeGameImplementation memory gameImpl;
+        bool failedToGetImpl = false;
+        (gameImpl, _errors, failedToGetImpl) = getGameImplementation(_errors, gameType, _sysCfg, errorPrefix);
+        if (failedToGetImpl) {
+            // Return early on failure to avoid trying to validate an invalid dispute game
             return _errors;
         }
 
         _errors = assertValidDisputeGame(
-            _errors,
-            _sysCfg,
-            _game,
-            _factory,
-            _absolutePrestate,
-            _l2ChainID,
-            _admin,
-            GameTypes.CANNON,
-            _overrides,
-            "PLDG"
+            DisputeGameValidationArgs({
+                errors: _errors,
+                sysCfg: _sysCfg,
+                game: gameImpl,
+                absolutePrestate: _absolutePrestate,
+                l2ChainID: _l2ChainID,
+                admin: _admin,
+                gameType: gameType,
+                overrides: _overrides,
+                errorPrefix: errorPrefix
+            })
         );
 
         return _errors;
     }
 
-    /// @notice Asserts that a DisputeGame contract is valid.
-    function assertValidDisputeGame(
-        string memory _errors,
-        ISystemConfig _sysCfg,
-        IPermissionedDisputeGame _game,
-        IDisputeGameFactory _factory,
-        bytes32 _absolutePrestate,
-        uint256 _l2ChainID,
-        IProxyAdmin _admin,
+    function getGameImplementation(
+        string memory _initialErrors,
         GameType _gameType,
-        ValidationOverrides memory _overrides,
+        ISystemConfig _sysCfg,
         string memory _errorPrefix
     )
         internal
         view
-        returns (string memory)
+        returns (DisputeGameImplementation memory gameImpl_, string memory errors_, bool failed_)
     {
-        IAnchorStateRegistry _asr = _game.anchorStateRegistry();
-        (Hash anchorRoot,) = _asr.getAnchorRoot();
+        errors_ = _initialErrors;
+        bool isPermissioned = _gameType.raw() == GameTypes.PERMISSIONED_CANNON.raw();
+        IDisputeGameFactory _factory = IDisputeGameFactory(_sysCfg.disputeGameFactory());
+        IPermissionedDisputeGame _game = IPermissionedDisputeGame(address(_factory.gameImpls(_gameType)));
 
-        _errors = internalRequire(
-            LibString.eq(getVersion(address(_game)), permissionedDisputeGameVersion()),
-            string.concat(_errorPrefix, "-20"),
-            _errors
-        );
-        _errors = internalRequire(
-            GameType.unwrap(_game.gameType()) == GameType.unwrap(_gameType), string.concat(_errorPrefix, "-30"), _errors
-        );
-        _errors = internalRequire(
-            Claim.unwrap(_game.absolutePrestate()) == _absolutePrestate, string.concat(_errorPrefix, "-40"), _errors
-        );
-        _errors = internalRequire(_game.l2ChainId() == _l2ChainID, string.concat(_errorPrefix, "-60"), _errors);
-        _errors = internalRequire(_game.l2SequenceNumber() == 0, string.concat(_errorPrefix, "-70"), _errors);
-        _errors = internalRequire(
-            Duration.unwrap(_game.clockExtension()) == 10800, string.concat(_errorPrefix, "-80"), _errors
-        );
-        _errors = internalRequire(_game.splitDepth() == 30, string.concat(_errorPrefix, "-90"), _errors);
-        _errors = internalRequire(_game.maxGameDepth() == 73, string.concat(_errorPrefix, "-100"), _errors);
-        _errors = internalRequire(
-            Duration.unwrap(_game.maxClockDuration()) == 302400, string.concat(_errorPrefix, "-110"), _errors
-        );
-        _errors = internalRequire(Hash.unwrap(anchorRoot) != bytes32(0), string.concat(_errorPrefix, "-120"), _errors);
+        if (address(_game) == address(0)) {
+            errors_ = internalRequire(false, string.concat(_errorPrefix, "-10"), errors_);
+            // Return early to avoid reverting, since this means that there is no valid game impl
+            // for this game type.
+            failed_ = true;
+            return (gameImpl_, errors_, failed_);
+        }
 
-        _errors = assertValidDelayedWETH(_errors, _sysCfg, _game.weth(), _admin, _overrides, _errorPrefix);
-        _errors = assertValidAnchorStateRegistry(_errors, _sysCfg, _factory, _asr, _admin, _errorPrefix);
+        bytes memory _gameArgs = _factory.gameArgs(_gameType);
+        bool lenCheckFailed;
+        (errors_, lenCheckFailed) = assertGameArgsLength(errors_, _gameArgs, isPermissioned, _errorPrefix);
+        if (lenCheckFailed) {
+            // Return early to avoid decoding invalid game args
+            failed_ = true;
+            return (gameImpl_, errors_, failed_);
+        }
+        gameImpl_ = _decodeDisputeGameImpl(_game, _gameArgs, _gameType);
 
-        _errors = assertValidMipsVm(_errors, IMIPS64(address(_game.vm())), _errorPrefix);
+        return (gameImpl_, errors_, failed_);
+    }
+
+    struct DisputeGameValidationArgs {
+        string errors;
+        ISystemConfig sysCfg;
+        DisputeGameImplementation game;
+        bytes32 absolutePrestate;
+        uint256 l2ChainID;
+        IProxyAdmin admin;
+        GameType gameType;
+        ValidationOverrides overrides;
+        string errorPrefix;
+    }
+
+    /// @notice Asserts that a DisputeGame contract is valid.
+    function assertValidDisputeGame(DisputeGameValidationArgs memory _args)
+        internal
+        view
+        returns (string memory errors_)
+    {
+        errors_ = _args.errors;
+        string memory errorPrefix = _args.errorPrefix;
+        DisputeGameImplementation memory game = _args.game;
+        (Hash anchorRoot,) = game.asr.getAnchorRoot();
+        IDisputeGameFactory dgf = IDisputeGameFactory(_args.sysCfg.disputeGameFactory());
+
+        errors_ = internalRequire(
+            LibString.eq(getVersion(game.gameAddress), permissionedDisputeGameVersion()),
+            string.concat(errorPrefix, "-20"),
+            errors_
+        );
+
+        errors_ = internalRequire(
+            GameType.unwrap(game.gameType) == GameType.unwrap(_args.gameType),
+            string.concat(errorPrefix, "-30"),
+            errors_
+        );
+        errors_ = internalRequire(
+            Claim.unwrap(game.absolutePrestate) == _args.absolutePrestate, string.concat(errorPrefix, "-40"), errors_
+        );
+        errors_ = internalRequire(game.l2ChainId == _args.l2ChainID, string.concat(errorPrefix, "-60"), errors_);
+        errors_ = internalRequire(game.l2SequenceNumber == 0, string.concat(errorPrefix, "-70"), errors_);
+        errors_ =
+            internalRequire(Duration.unwrap(game.clockExtension) == 10800, string.concat(errorPrefix, "-80"), errors_);
+        errors_ = internalRequire(game.splitDepth == 30, string.concat(errorPrefix, "-90"), errors_);
+        errors_ = internalRequire(game.maxGameDepth == 73, string.concat(errorPrefix, "-100"), errors_);
+        errors_ = internalRequire(
+            Duration.unwrap(game.maxClockDuration) == 302400, string.concat(errorPrefix, "-110"), errors_
+        );
+        errors_ = internalRequire(Hash.unwrap(anchorRoot) != bytes32(0), string.concat(errorPrefix, "-120"), errors_);
+
+        errors_ = assertValidDelayedWETH(errors_, _args.sysCfg, game.weth, _args.admin, _args.overrides, errorPrefix);
+        errors_ = assertValidAnchorStateRegistry(errors_, _args.sysCfg, dgf, game.asr, _args.admin, errorPrefix);
+
+        errors_ = assertValidMipsVm(errors_, IMIPS64(address(game.vm)), errorPrefix);
 
         // Only assert valid preimage oracle if the game VM is valid, since otherwise
         // the contract is likely to revert.
-        if (address(_game.vm()) == mipsImpl) {
-            _errors = assertValidPreimageOracle(_errors, _game.vm().oracle(), _errorPrefix);
+        if (address(game.vm) == mipsImpl) {
+            errors_ = assertValidPreimageOracle(errors_, game.vm.oracle(), errorPrefix);
         }
 
-        return _errors;
+        return errors_;
     }
 
     /// @notice Asserts that the DelayedWETH contract is valid.
@@ -644,7 +702,9 @@ contract OPContractsManagerStandardValidator is ISemver {
     {
         _errorPrefix = string.concat(_errorPrefix, "-DWETH");
         _errors = internalRequire(
-            LibString.eq(getVersion(address(_weth)), delayedWETHVersion()), string.concat(_errorPrefix, "-10"), _errors
+            LibString.eq(getVersion(address(_weth)), getVersion(delayedWETHImpl)),
+            string.concat(_errorPrefix, "-10"),
+            _errors
         );
         _errors = internalRequire(
             getProxyImplementation(_admin, address(_weth)) == delayedWETHImpl,
@@ -676,7 +736,7 @@ contract OPContractsManagerStandardValidator is ISemver {
     {
         _errorPrefix = string.concat(_errorPrefix, "-ANCHORP");
         _errors = internalRequire(
-            LibString.eq(getVersion(address(_asr)), anchorStateRegistryVersion()),
+            LibString.eq(getVersion(address(_asr)), getVersion(anchorStateRegistryImpl)),
             string.concat(_errorPrefix, "-10"),
             _errors
         );
@@ -707,9 +767,9 @@ contract OPContractsManagerStandardValidator is ISemver {
         _errorPrefix = string.concat(_errorPrefix, "-VM");
         _errors = internalRequire(address(_mips) == mipsImpl, string.concat(_errorPrefix, "-10"), _errors);
         _errors = internalRequire(
-            LibString.eq(getVersion(address(_mips)), mipsVersion()), string.concat(_errorPrefix, "-20"), _errors
+            LibString.eq(getVersion(address(_mips)), getVersion(mipsImpl)), string.concat(_errorPrefix, "-20"), _errors
         );
-        _errors = internalRequire(_mips.stateVersion() == 7, string.concat(_errorPrefix, "-30"), _errors);
+        _errors = internalRequire(_mips.stateVersion() == 8, string.concat(_errorPrefix, "-30"), _errors);
         return _errors;
     }
 
@@ -786,7 +846,13 @@ contract OPContractsManagerStandardValidator is ISemver {
         _errors = assertValidOptimismPortal(_errors, _input.sysCfg, _input.proxyAdmin);
         _errors = assertValidDisputeGameFactory(_errors, _input.sysCfg, _input.proxyAdmin, _overrides);
         _errors = assertValidPermissionedDisputeGame(
-            _errors, _input.sysCfg, _input.absolutePrestate, _input.l2ChainID, _input.proxyAdmin, _overrides
+            _errors,
+            _input.sysCfg,
+            _input.absolutePrestate,
+            _input.l2ChainID,
+            _input.proxyAdmin,
+            _input.proposer,
+            _overrides
         );
         _errors = assertValidPermissionlessDisputeGame(
             _errors, _input.sysCfg, _input.absolutePrestate, _input.l2ChainID, _input.proxyAdmin, _overrides
@@ -813,5 +879,80 @@ contract OPContractsManagerStandardValidator is ISemver {
         }
 
         return finalErrors;
+    }
+
+    function assertGameArgsLength(
+        string memory _errors,
+        bytes memory _gameArgsBytes,
+        bool _isPermissioned,
+        string memory _errorPrefix
+    )
+        internal
+        view
+        returns (string memory errors_, bool failed_)
+    {
+        _errorPrefix = string.concat(_errorPrefix, "-GARGS");
+        if (DevFeatures.isDevFeatureEnabled(devFeatureBitmap, DevFeatures.DEPLOY_V2_DISPUTE_GAMES)) {
+            if (_isPermissioned) {
+                bool ok = LibGameArgs.isValidPermissionedArgs(_gameArgsBytes);
+                _errors = internalRequire(ok, string.concat(_errorPrefix, "-10"), _errors);
+                return (_errors, !ok);
+            } else {
+                bool ok = LibGameArgs.isValidPermissionlessArgs(_gameArgsBytes);
+                _errors = internalRequire(ok, string.concat(_errorPrefix, "-10"), _errors);
+                return (_errors, !ok);
+            }
+        } else {
+            bool ok = _gameArgsBytes.length == 0;
+            _errors = internalRequire(ok, string.concat(_errorPrefix, "-10"), _errors);
+            return (_errors, !ok);
+        }
+    }
+
+    // @notice Internal function to read all information from a dispute game while supporting both v1 and v2 dispute
+    /// games.
+    function _decodeDisputeGameImpl(
+        IPermissionedDisputeGame _game,
+        bytes memory _gameArgsBytes,
+        GameType _gameType
+    )
+        internal
+        view
+        returns (DisputeGameImplementation memory gameImpl_)
+    {
+        GameType gameType;
+        LibGameArgs.GameArgs memory gameArgs;
+        if (DevFeatures.isDevFeatureEnabled(devFeatureBitmap, DevFeatures.DEPLOY_V2_DISPUTE_GAMES)) {
+            gameType = _gameType;
+            gameArgs = LibGameArgs.decode(_gameArgsBytes);
+        } else {
+            gameType = _game.gameType();
+            gameArgs.absolutePrestate = Claim.unwrap(_game.absolutePrestate());
+            gameArgs.vm = address(_game.vm());
+            gameArgs.anchorStateRegistry = address(_game.anchorStateRegistry());
+            gameArgs.weth = address(_game.weth());
+            gameArgs.l2ChainId = _game.l2ChainId();
+            if (_gameType.raw() == GameTypes.PERMISSIONED_CANNON.raw()) {
+                gameArgs.challenger = _game.challenger();
+                gameArgs.proposer = _game.proposer();
+            }
+        }
+
+        gameImpl_ = DisputeGameImplementation({
+            gameAddress: address(_game),
+            maxGameDepth: _game.maxGameDepth(),
+            splitDepth: _game.splitDepth(),
+            maxClockDuration: _game.maxClockDuration(),
+            clockExtension: _game.clockExtension(),
+            gameType: gameType,
+            l2SequenceNumber: _game.l2SequenceNumber(),
+            absolutePrestate: Claim.wrap(gameArgs.absolutePrestate),
+            vm: IBigStepper(gameArgs.vm),
+            asr: IAnchorStateRegistry(gameArgs.anchorStateRegistry),
+            weth: IDelayedWETH(payable(gameArgs.weth)),
+            l2ChainId: gameArgs.l2ChainId,
+            challenger: gameArgs.challenger,
+            proposer: gameArgs.proposer
+        });
     }
 }

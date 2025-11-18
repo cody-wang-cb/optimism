@@ -63,6 +63,8 @@ var AllForks = []ForkName{
 	// ADD NEW FORKS HERE!
 }
 
+var LatestFork = AllForks[len(AllForks)-1]
+
 func ForksFrom(fork ForkName) []ForkName {
 	for i, f := range AllForks {
 		if f == fork {
@@ -121,6 +123,11 @@ func (s *ChainSpec) IsHolocene(t uint64) bool {
 // IsIsthmus returns true if t >= isthmus_time
 func (s *ChainSpec) IsIsthmus(t uint64) bool {
 	return s.config.IsIsthmus(t)
+}
+
+// IsJovian returns true if t >= jovian_time
+func (s *ChainSpec) IsJovian(t uint64) bool {
+	return s.config.IsJovian(t)
 }
 
 // MaxChannelBankSize returns the maximum number of bytes the can allocated inside the channel bank

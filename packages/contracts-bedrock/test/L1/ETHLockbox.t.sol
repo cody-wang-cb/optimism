@@ -11,6 +11,7 @@ import { Proxy } from "src/universal/Proxy.sol";
 import { Constants } from "src/libraries/Constants.sol";
 import { EIP1967Helper } from "test/mocks/EIP1967Helper.sol";
 import { ForgeArtifacts, StorageSlot } from "scripts/libraries/ForgeArtifacts.sol";
+import { Features } from "src/libraries/Features.sol";
 
 // Interfaces
 import { IETHLockbox } from "interfaces/L1/IETHLockbox.sol";
@@ -19,7 +20,7 @@ import { IOptimismPortal2 } from "interfaces/L1/IOptimismPortal2.sol";
 
 /// @title ETHLockbox_TestInit
 /// @notice Base contract that sets up the testing environment for ETHLockbox tests.
-contract ETHLockbox_TestInit is CommonTest {
+abstract contract ETHLockbox_TestInit is CommonTest {
     error InvalidInitialization();
 
     event ETHLocked(IOptimismPortal2 indexed portal, uint256 amount);
@@ -36,6 +37,9 @@ contract ETHLockbox_TestInit is CommonTest {
         // deployed
         // TODO(#14691): Remove this check once Upgrade 15 is deployed on Mainnet.
         if (isForkTest() && !deploy.cfg().useUpgradedFork()) vm.skip(true);
+
+        // If the ETHLockbox system feature is not enabled, skip these tests.
+        skipIfSysFeatureDisabled(Features.ETH_LOCKBOX);
     }
 }
 
@@ -639,9 +643,9 @@ contract ETHLockbox_MigrateLiquidity_Test is ETHLockbox_TestInit {
     }
 }
 
-/// @title ETHLockbox_Unclassified_Test
-/// @notice Contains unclassified tests related to ETHLockbox.
-contract ETHLockbox_Unclassified_Test is ETHLockbox_TestInit {
+/// @title ETHLockbox_Uncategorized_Test
+/// @notice Contains uncategorized tests related to ETHLockbox.
+contract ETHLockbox_Uncategorized_Test is ETHLockbox_TestInit {
     /// @notice Tests the proxy admin owner is correctly returned.
     function test_proxyProxyAdminOwner_succeeds() public view {
         assertEq(ethLockbox.proxyAdminOwner(), proxyAdminOwner);

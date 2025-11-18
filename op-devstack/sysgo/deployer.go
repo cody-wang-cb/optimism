@@ -4,6 +4,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -44,6 +45,20 @@ type DeployerPipelineOption func(wb *worldBuilder, intent *state.Intent, cfg *de
 func WithDeployerCacheDir(dirPath string) DeployerPipelineOption {
 	return func(_ *worldBuilder, _ *state.Intent, cfg *deployer.ApplyPipelineOpts) {
 		cfg.CacheDir = dirPath
+	}
+}
+
+// WithDAFootprintGasScalar sets the DA footprint gas scalar with which the networks identified by
+// l2IDs will be launched. If there are no l2IDs provided, all L2 networks are set with scalar.
+func WithDAFootprintGasScalar(scalar uint16, l2IDs ...stack.L2NetworkID) DeployerOption {
+	return func(p devtest.P, _ devkeys.Keys, builder intentbuilder.Builder) {
+		for _, l2 := range builder.L2s() {
+			if len(l2IDs) == 0 || slices.ContainsFunc(l2IDs, func(id stack.L2NetworkID) bool {
+				return id.ChainID() == l2.ChainID()
+			}) {
+				l2.WithDAFootprintGasScalar(scalar)
+			}
+		}
 	}
 }
 
@@ -119,9 +134,11 @@ func WithDeployer() stack.Option[*Orchestrator] {
 }
 
 type L2Deployment struct {
-	systemConfigProxyAddr   common.Address
-	disputeGameFactoryProxy common.Address
-	l1StandardBridgeProxy   common.Address
+	systemConfigProxyAddr          common.Address
+	disputeGameFactoryProxy        common.Address
+	l1StandardBridgeProxy          common.Address
+	proxyAdmin                     common.Address
+	permissionlessDelayedWETHProxy common.Address
 }
 
 var _ stack.L2Deployment = &L2Deployment{}
@@ -136,6 +153,14 @@ func (d *L2Deployment) DisputeGameFactoryProxyAddr() common.Address {
 
 func (d *L2Deployment) L1StandardBridgeProxyAddr() common.Address {
 	return d.l1StandardBridgeProxy
+}
+
+func (d *L2Deployment) ProxyAdminAddr() common.Address {
+	return d.proxyAdmin
+}
+
+func (d *L2Deployment) PermissionlessDelayedWETHProxyAddr() common.Address {
+	return d.permissionlessDelayedWETHProxy
 }
 
 type InteropMigration struct {
@@ -249,11 +274,46 @@ func WithPrefundedL2(l1ChainID, l2ChainID eth.ChainID) DeployerOption {
 	}
 }
 
+// WithDevFeatureBitmap sets the dev feature bitmap.
+func WithDevFeatureBitmap(devFlags common.Hash) DeployerOption {
+	return func(p devtest.P, keys devkeys.Keys, builder intentbuilder.Builder) {
+		builder.WithGlobalOverride("devFeatureBitmap", devFlags)
+	}
+}
+
 // WithInteropAtGenesis activates interop at genesis for all known L2s
 func WithInteropAtGenesis() DeployerOption {
 	return func(p devtest.P, keys devkeys.Keys, builder intentbuilder.Builder) {
 		for _, l2Cfg := range builder.L2s() {
 			l2Cfg.WithForkAtGenesis(rollup.Interop)
+		}
+	}
+}
+
+// WithHardforkSequentialActivation configures a deployment such that L2 chains
+// activate hardforks sequentially, starting from startFork and continuing
+// until (but not including) endFork. Each successive fork is scheduled at
+// an increasing offset.
+func WithHardforkSequentialActivation(startFork, endFork rollup.ForkName, delta *uint64) DeployerOption {
+	return func(p devtest.P, keys devkeys.Keys, builder intentbuilder.Builder) {
+		for _, l2Cfg := range builder.L2s() {
+			l2Cfg.WithForkAtGenesis(startFork)
+			activateWithOffset := false
+			deactivate := false
+			for idx, refFork := range rollup.AllForks {
+				if deactivate || refFork == endFork {
+					l2Cfg.WithForkAtOffset(refFork, nil)
+					deactivate = true
+					continue
+				}
+				if activateWithOffset {
+					offset := *delta * uint64(idx)
+					l2Cfg.WithForkAtOffset(refFork, &offset)
+				}
+				if startFork == refFork {
+					activateWithOffset = true
+				}
+			}
 		}
 	}
 }
@@ -334,9 +394,11 @@ func (wb *worldBuilder) buildL2DeploymentOutputs() {
 	for _, ch := range wb.output.Chains {
 		chainID := eth.ChainIDFromBytes32(ch.ID)
 		wb.outL2Deployment[chainID] = &L2Deployment{
-			systemConfigProxyAddr:   ch.SystemConfigProxy,
-			disputeGameFactoryProxy: ch.DisputeGameFactoryProxy,
-			l1StandardBridgeProxy:   ch.L1StandardBridgeProxy,
+			systemConfigProxyAddr:          ch.SystemConfigProxy,
+			disputeGameFactoryProxy:        ch.DisputeGameFactoryProxy,
+			l1StandardBridgeProxy:          ch.L1StandardBridgeProxy,
+			proxyAdmin:                     ch.OpChainProxyAdminImpl,
+			permissionlessDelayedWETHProxy: ch.DelayedWethPermissionlessGameProxy,
 		}
 	}
 	wb.outSuperchainDeployment = &SuperchainDeployment{
