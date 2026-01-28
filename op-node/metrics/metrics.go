@@ -72,6 +72,10 @@ type Metricer interface {
 	RecordDial(allow bool)
 	RecordAccept(allow bool)
 	ReportProtocolVersions(local, engine, recommended, required params.ProtocolVersion)
+	// Shadow engine metrics
+	RecordShadowEngineCall(endpoint string, method string, success bool, duration time.Duration)
+	RecordShadowEngineDropped(endpoint string, method string)
+	RecordShadowEngineQueueDepth(endpoint string, depth int)
 }
 
 // Metrics tracks all the metrics for the op-node.
@@ -148,6 +152,12 @@ type Metrics struct {
 	ProtocolVersionDelta *prometheus.GaugeVec
 	// ProtocolVersions is pseudo-metric to report the exact protocol version info
 	ProtocolVersions *prometheus.GaugeVec
+
+	// Shadow engine metrics for fire-and-forget replication
+	ShadowEngineCallsTotal   *prometheus.CounterVec
+	ShadowEngineCallDuration *prometheus.HistogramVec
+	ShadowEngineCallsDropped *prometheus.CounterVec
+	ShadowEngineQueueDepth   *prometheus.GaugeVec
 
 	registry *prometheus.Registry
 	factory  metrics.Factory
@@ -394,6 +404,32 @@ func NewMetrics(procName string) *Metrics {
 
 		AltDAMetrics: altda.MakeMetrics(ns, factory),
 
+		ShadowEngineCallsTotal: factory.NewCounterVec(prometheus.CounterOpts{
+			Namespace: ns,
+			Subsystem: "shadow_engine",
+			Name:      "calls_total",
+			Help:      "Total calls to shadow execution engines",
+		}, []string{"endpoint", "method", "success"}),
+		ShadowEngineCallDuration: factory.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: ns,
+			Subsystem: "shadow_engine",
+			Name:      "call_duration_seconds",
+			Help:      "Duration of shadow engine calls",
+			Buckets:   []float64{.01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10},
+		}, []string{"endpoint", "method"}),
+		ShadowEngineCallsDropped: factory.NewCounterVec(prometheus.CounterOpts{
+			Namespace: ns,
+			Subsystem: "shadow_engine",
+			Name:      "calls_dropped_total",
+			Help:      "Total calls dropped due to full queue",
+		}, []string{"endpoint", "method"}),
+		ShadowEngineQueueDepth: factory.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: ns,
+			Subsystem: "shadow_engine",
+			Name:      "queue_depth",
+			Help:      "Current queue depth for shadow engine calls",
+		}, []string{"endpoint"}),
+
 		registry: registry,
 		factory:  factory,
 	}
@@ -638,6 +674,19 @@ func (m *Metrics) ReportProtocolVersions(local, engine, recommended, required pa
 	m.ProtocolVersions.WithLabelValues(local.String(), engine.String(), recommended.String(), required.String()).Set(1)
 }
 
+func (m *Metrics) RecordShadowEngineCall(endpoint string, method string, success bool, duration time.Duration) {
+	m.ShadowEngineCallsTotal.WithLabelValues(endpoint, method, strconv.FormatBool(success)).Inc()
+	m.ShadowEngineCallDuration.WithLabelValues(endpoint, method).Observe(duration.Seconds())
+}
+
+func (m *Metrics) RecordShadowEngineDropped(endpoint string, method string) {
+	m.ShadowEngineCallsDropped.WithLabelValues(endpoint, method).Inc()
+}
+
+func (m *Metrics) RecordShadowEngineQueueDepth(endpoint string, depth int) {
+	m.ShadowEngineQueueDepth.WithLabelValues(endpoint).Set(float64(depth))
+}
+
 type noopMetricer struct {
 	metrics.NoopRPCMetrics
 	event.NoopMetrics
@@ -763,4 +812,13 @@ func (n *noopMetricer) RecordDial(allow bool) {
 func (n *noopMetricer) RecordAccept(allow bool) {
 }
 func (n *noopMetricer) ReportProtocolVersions(local, engine, recommended, required params.ProtocolVersion) {
+}
+
+func (n *noopMetricer) RecordShadowEngineCall(endpoint string, method string, success bool, duration time.Duration) {
+}
+
+func (n *noopMetricer) RecordShadowEngineDropped(endpoint string, method string) {
+}
+
+func (n *noopMetricer) RecordShadowEngineQueueDepth(endpoint string, depth int) {
 }

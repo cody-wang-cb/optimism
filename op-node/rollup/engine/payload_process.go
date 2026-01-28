@@ -29,6 +29,10 @@ func (e *EngineController) onPayloadProcess(ctx context.Context, ev PayloadProce
 	defer cancel()
 
 	insertStart := time.Now()
+	// Forward to shadow engines (fire-and-forget)
+	if e.shadowForwarder != nil {
+		e.shadowForwarder.ForwardNewPayload(ev.Envelope.ExecutionPayload, ev.Envelope.ParentBeaconBlockRoot)
+	}
 	status, err := e.engine.NewPayload(rpcCtx,
 		ev.Envelope.ExecutionPayload, ev.Envelope.ParentBeaconBlockRoot)
 	if err != nil {

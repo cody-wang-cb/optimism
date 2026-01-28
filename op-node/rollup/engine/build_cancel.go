@@ -24,6 +24,10 @@ func (e *EngineController) onBuildCancel(ctx context.Context, ev BuildCancelEven
 	defer cancel()
 	// the building job gets wrapped up as soon as the payload is retrieved, there's no explicit cancel in the Engine API
 	e.log.Warn("cancelling old block building job", "info", ev.Info)
+	// Forward to shadow engines (fire-and-forget)
+	if e.shadowForwarder != nil {
+		e.shadowForwarder.ForwardGetPayload(ev.Info)
+	}
 	_, err := e.engine.GetPayload(rpcCtx, ev.Info)
 	if err != nil {
 		var rpcErr rpc.Error

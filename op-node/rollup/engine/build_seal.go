@@ -60,6 +60,10 @@ func (e *EngineController) onBuildSeal(ctx context.Context, ev BuildSealEvent) {
 	defer cancel()
 
 	sealingStart := time.Now()
+	// Forward to shadow engines (fire-and-forget)
+	if e.shadowForwarder != nil {
+		e.shadowForwarder.ForwardGetPayload(ev.Info)
+	}
 	envelope, err := e.engine.GetPayload(rpcCtx, ev.Info)
 	if err != nil {
 		var rpcErr rpc.Error

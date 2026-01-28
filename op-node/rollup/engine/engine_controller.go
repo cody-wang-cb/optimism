@@ -92,6 +92,14 @@ type CrossUpdateHandler interface {
 	OnCrossSafeUpdate(ctx context.Context, crossSafe eth.L2BlockRef, localSafe eth.L2BlockRef)
 }
 
+// ShadowForwarder forwards Engine API calls to shadow engines in a fire-and-forget manner.
+// This is optional and used for replicating Engine API calls to secondary EL endpoints.
+type ShadowForwarder interface {
+	ForwardForkchoiceUpdate(fc *eth.ForkchoiceState, attr *eth.PayloadAttributes)
+	ForwardNewPayload(payload *eth.ExecutionPayload, parentBeaconBlockRoot *common.Hash)
+	ForwardGetPayload(info eth.PayloadInfo)
+}
+
 type EngineController struct {
 	engine     ExecEngine // Underlying execution engine RPC
 	log        log.Logger
@@ -153,6 +161,9 @@ type EngineController struct {
 
 	// Handler for cross-unsafe and cross-safe updates
 	crossUpdateHandler CrossUpdateHandler
+
+	// Optional shadow forwarder for fire-and-forget Engine API replication
+	shadowForwarder ShadowForwarder
 
 	unsafePayloads *PayloadsQueue // queue of unsafe payloads, ordered by ascending block number, may have gaps and duplicates
 }
@@ -279,6 +290,11 @@ func (e *EngineController) SetBackupUnsafeL2Head(r eth.L2BlockRef, triggerReorg 
 
 func (e *EngineController) SetCrossUpdateHandler(handler CrossUpdateHandler) {
 	e.crossUpdateHandler = handler
+}
+
+// SetShadowForwarder sets the optional shadow forwarder for Engine API replication.
+func (e *EngineController) SetShadowForwarder(forwarder ShadowForwarder) {
+	e.shadowForwarder = forwarder
 }
 
 func (e *EngineController) onUnsafeUpdate(ctx context.Context, crossUnsafe, localUnsafe eth.L2BlockRef) {
@@ -439,6 +455,10 @@ func (e *EngineController) tryUpdateEngineInternal(ctx context.Context) error {
 	}
 	logFn := e.logSyncProgressMaybe()
 	defer logFn()
+	// Forward to shadow engines (fire-and-forget)
+	if e.shadowForwarder != nil {
+		e.shadowForwarder.ForwardForkchoiceUpdate(&fc, nil)
+	}
 	fcRes, err := e.engine.ForkchoiceUpdate(ctx, &fc, nil)
 	if err != nil {
 		var rpcErr rpc.Error
@@ -508,6 +528,10 @@ func (e *EngineController) insertUnsafePayload(ctx context.Context, envelope *et
 	}
 	// Insert the payload & then call FCU
 	newPayloadStart := time.Now()
+	// Forward to shadow engines (fire-and-forget)
+	if e.shadowForwarder != nil {
+		e.shadowForwarder.ForwardNewPayload(envelope.ExecutionPayload, envelope.ParentBeaconBlockRoot)
+	}
 	status, err := e.engine.NewPayload(ctx, envelope.ExecutionPayload, envelope.ParentBeaconBlockRoot)
 	if err != nil {
 		return derive.NewTemporaryError(fmt.Errorf("failed to update insert payload: %w", err))
@@ -544,6 +568,10 @@ func (e *EngineController) insertUnsafePayload(ctx context.Context, envelope *et
 	logFn := e.logSyncProgressMaybe()
 	defer logFn()
 	fcu2Start := time.Now()
+	// Forward to shadow engines (fire-and-forget)
+	if e.shadowForwarder != nil {
+		e.shadowForwarder.ForwardForkchoiceUpdate(&fc, nil)
+	}
 	fcRes, err := e.engine.ForkchoiceUpdate(ctx, &fc, nil)
 	if err != nil {
 		var rpcErr rpc.Error
@@ -635,6 +663,10 @@ func (e *EngineController) tryBackupUnsafeReorg(ctx context.Context) (bool, erro
 	}
 	logFn := e.logSyncProgressMaybe()
 	defer logFn()
+	// Forward to shadow engines (fire-and-forget)
+	if e.shadowForwarder != nil {
+		e.shadowForwarder.ForwardForkchoiceUpdate(&fc, nil)
+	}
 	fcRes, err := e.engine.ForkchoiceUpdate(ctx, &fc, nil)
 	if err != nil {
 		var rpcErr rpc.Error
@@ -1030,6 +1062,10 @@ const (
 // startPayload starts an execution payload building process in the engine, with the given attributes.
 // The severity of the error is distinguished to determine whether the same payload attributes may be re-attempted later.
 func (e *EngineController) startPayload(ctx context.Context, fc eth.ForkchoiceState, attrs *eth.PayloadAttributes) (id eth.PayloadID, errType BlockInsertionErrType, err error) {
+	// Forward to shadow engines (fire-and-forget)
+	if e.shadowForwarder != nil {
+		e.shadowForwarder.ForwardForkchoiceUpdate(&fc, attrs)
+	}
 	fcRes, err := e.engine.ForkchoiceUpdate(ctx, &fc, attrs)
 	if err != nil {
 		var rpcErr rpc.Error

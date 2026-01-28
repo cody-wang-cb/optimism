@@ -186,10 +186,49 @@ func NewL2EndpointConfig(ctx cliiface.Context, logger log.Logger) (*config.L2End
 		return nil, err
 	}
 	l2RpcTimeout := ctx.Duration(flags.L2EngineRpcTimeout.Name)
+
+	// Parse shadow engine configuration
+	shadowCfg, err := NewShadowEngineConfig(ctx, logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load shadow engine config: %w", err)
+	}
+
 	return &config.L2EndpointConfig{
 		L2EngineAddr:        l2Addr,
 		L2EngineJWTSecret:   secret,
 		L2EngineCallTimeout: l2RpcTimeout,
+		Shadow:              shadowCfg,
+	}, nil
+}
+
+// NewShadowEngineConfig creates a ShadowEngineConfig from CLI flags.
+func NewShadowEngineConfig(ctx cliiface.Context, logger log.Logger) (config.ShadowEngineConfig, error) {
+	addrs := ctx.StringSlice(flags.ShadowEngineAddrs.Name)
+	if len(addrs) == 0 {
+		return config.ShadowEngineConfig{}, nil
+	}
+
+	jwtPaths := ctx.StringSlice(flags.ShadowEngineJWTSecrets.Name)
+	if len(jwtPaths) != len(addrs) {
+		return config.ShadowEngineConfig{}, fmt.Errorf(
+			"number of shadow engine JWT secrets (%d) must match number of shadow engines (%d)",
+			len(jwtPaths), len(addrs))
+	}
+
+	secrets := make([][32]byte, len(jwtPaths))
+	for i, path := range jwtPaths {
+		secret, err := rpc.ObtainJWTSecret(logger, path, false)
+		if err != nil {
+			return config.ShadowEngineConfig{}, fmt.Errorf("failed to load JWT secret for shadow engine %s: %w", addrs[i], err)
+		}
+		secrets[i] = secret
+	}
+
+	return config.ShadowEngineConfig{
+		Addrs:      addrs,
+		JWTSecrets: secrets,
+		Timeout:    ctx.Duration(flags.ShadowEngineTimeout.Name),
+		BufferSize: ctx.Int(flags.ShadowEngineBufferSize.Name),
 	}, nil
 }
 

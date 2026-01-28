@@ -19,6 +19,8 @@ type L2EndpointSetup interface {
 	// Setup a RPC client to a L2 execution engine to process rollup blocks with.
 	Setup(ctx context.Context, log log.Logger, rollupCfg *rollup.Config, metrics opmetrics.RPCMetricer) (cl client.RPC, rpcCfg *sources.EngineClientConfig, err error)
 	Check() error
+	// ShadowConfig returns the shadow engine configuration, if any.
+	ShadowConfig() ShadowEngineConfig
 }
 
 type L2EndpointConfig struct {
@@ -33,9 +35,39 @@ type L2EndpointConfig struct {
 	// L2EngineCallTimeout is the default timeout duration for L2 calls.
 	// Defines the maximum time a call to the L2 engine is allowed to take before timing out.
 	L2EngineCallTimeout time.Duration
+
+	// Shadow contains configuration for fire-and-forget shadow engine replication.
+	Shadow ShadowEngineConfig
+}
+
+// ShadowEngineConfig contains configuration for shadow EL endpoints
+// that receive fire-and-forget Engine API call replication.
+type ShadowEngineConfig struct {
+	// Addrs is a list of shadow EL RPC endpoint addresses.
+	Addrs []string
+
+	// JWTSecrets contains per-endpoint JWT secrets for authentication.
+	// Must have the same length as Addrs if non-empty.
+	JWTSecrets [][32]byte
+
+	// Timeout is the RPC timeout for shadow engine calls.
+	Timeout time.Duration
+
+	// BufferSize is the size of the async call buffer per shadow engine.
+	BufferSize int
+}
+
+// Enabled returns true if shadow engine replication is configured.
+func (cfg *ShadowEngineConfig) Enabled() bool {
+	return len(cfg.Addrs) > 0
 }
 
 var _ L2EndpointSetup = (*L2EndpointConfig)(nil)
+
+// ShadowConfig returns the shadow engine configuration.
+func (cfg *L2EndpointConfig) ShadowConfig() ShadowEngineConfig {
+	return cfg.Shadow
+}
 
 func (cfg *L2EndpointConfig) Check() error {
 	if cfg.L2EngineAddr == "" {
@@ -81,4 +113,9 @@ var _ L2EndpointSetup = (*PreparedL2Endpoints)(nil)
 
 func (p *PreparedL2Endpoints) Setup(ctx context.Context, log log.Logger, rollupCfg *rollup.Config, metrics opmetrics.RPCMetricer) (client.RPC, *sources.EngineClientConfig, error) {
 	return p.Client, sources.EngineClientDefaultConfig(rollupCfg), nil
+}
+
+// ShadowConfig returns an empty shadow config (not supported for prepared endpoints).
+func (p *PreparedL2Endpoints) ShadowConfig() ShadowEngineConfig {
+	return ShadowEngineConfig{}
 }

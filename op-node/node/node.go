@@ -17,6 +17,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	gethevent "github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
+	gn "github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/rpc"
 
 	altda "github.com/ethereum-optimism/optimism/op-alt-da"
@@ -29,6 +30,7 @@ import (
 	"github.com/ethereum-optimism/optimism/op-node/rollup"
 	"github.com/ethereum-optimism/optimism/op-node/rollup/conductor"
 	"github.com/ethereum-optimism/optimism/op-node/rollup/driver"
+	"github.com/ethereum-optimism/optimism/op-node/rollup/engine/shadow"
 	"github.com/ethereum-optimism/optimism/op-node/rollup/interop"
 	"github.com/ethereum-optimism/optimism/op-node/rollup/interop/indexing"
 	"github.com/ethereum-optimism/optimism/op-node/rollup/sequencing"
@@ -113,9 +115,11 @@ type OpNode struct {
 	eventSys   event.System
 	eventDrain driver.Drain
 
-	l1Source  L1Source              // L1 Client to fetch data from
-	l2Driver  *driver.Driver        // L2 Engine to Sync
-	l2Source  *sources.EngineClient // L2 Execution Engine RPC bindings
+	l1Source       L1Source                     // L1 Client to fetch data from
+	l2Driver       *driver.Driver               // L2 Engine to Sync
+	l2Source       *sources.EngineClient        // L2 Execution Engine RPC bindings
+	shadowEngines  []*shadow.ShadowEngine       // Optional shadow engines for fire-and-forget replication
+	shadowsStarted bool                         // Whether shadow engines have been started
 	server    *oprpc.Server         // RPC server hosting the rollup-node API
 	p2pNode   *p2p.NodeP2P          // P2P node functionality
 	p2pMu     gosync.Mutex          // protects p2pNode
@@ -235,6 +239,18 @@ func (n *OpNode) init(ctx context.Context, cfg *config.Config, overrides Initial
 	n.l2Source, n.interopSys, n.l2Driver, n.safeDB, err = initL2(ctx, cfg, n)
 	if err != nil {
 		return fmt.Errorf("failed to init L2: %w", err)
+	}
+
+	// Initialize shadow engines for fire-and-forget replication (if configured)
+	n.shadowEngines, err = initShadowEngines(ctx, cfg, n)
+	if err != nil {
+		return fmt.Errorf("failed to init shadow engines: %w", err)
+	}
+	// Wire shadow forwarder to engine controller if shadow engines are configured
+	if len(n.shadowEngines) > 0 {
+		forwarder := shadow.NewForwarder(n.shadowEngines)
+		n.l2Driver.SyncDeriver.Engine.SetShadowForwarder(forwarder)
+		n.log.Info("Shadow forwarder wired to engine controller")
 	}
 
 	n.l1HeadsSub, n.l1SafeSub, n.l1FinalizedSub, err = initL1Handlers(cfg, n)
@@ -600,6 +616,59 @@ func initL2(ctx context.Context, cfg *config.Config, node *OpNode) (*sources.Eng
 	return l2Source, sys, l2Driver, safeDB, nil
 }
 
+// initShadowEngines creates shadow engine clients for fire-and-forget replication.
+// Shadow engines receive Engine API calls but their responses are ignored.
+func initShadowEngines(ctx context.Context, cfg *config.Config, node *OpNode) ([]*shadow.ShadowEngine, error) {
+	shadowCfg := cfg.L2.ShadowConfig()
+	if !shadowCfg.Enabled() {
+		return nil, nil
+	}
+
+	if len(shadowCfg.JWTSecrets) != len(shadowCfg.Addrs) {
+		return nil, fmt.Errorf("shadow engine JWT secrets count (%d) must match endpoints count (%d)",
+			len(shadowCfg.JWTSecrets), len(shadowCfg.Addrs))
+	}
+
+	var engines []*shadow.ShadowEngine
+
+	for i, addr := range shadowCfg.Addrs {
+		auth := rpc.WithHTTPAuth(gn.NewJWTAuth(shadowCfg.JWTSecrets[i]))
+		opts := []client.RPCOption{
+			client.WithGethRPCOptions(auth),
+			client.WithDialAttempts(3),
+			client.WithCallTimeout(shadowCfg.Timeout),
+			client.WithLazyDial(),
+		}
+
+		rpcClient, err := client.NewRPC(ctx, node.log, addr, opts...)
+		if err != nil {
+			node.log.Warn("Failed to create shadow engine RPC client, skipping",
+				"addr", addr, "err", err)
+			continue
+		}
+
+		engineClient := sources.NewEngineAPIClient(rpcClient, node.log, &cfg.Rollup)
+
+		engine := shadow.NewShadowEngine(
+			addr,
+			engineClient,
+			node.log,
+			node.metrics,
+			shadowCfg.Timeout,
+			shadowCfg.BufferSize,
+		)
+
+		engines = append(engines, engine)
+		node.log.Info("Created shadow engine", "endpoint", addr)
+	}
+
+	if len(engines) > 0 {
+		node.log.Info("Shadow engines configured", "count", len(engines))
+	}
+
+	return engines, nil
+}
+
 func initRPCServer(cfg *config.Config, node *OpNode) (*oprpc.Server, error) {
 	server := newRPCServer(&cfg.RPC, &cfg.Rollup, cfg.DependencySet,
 		node.l2Source.L2Client, node.l2Driver, node.safeDB,
@@ -734,6 +803,16 @@ func (n *OpNode) Start(ctx context.Context) error {
 			return err
 		}
 	}
+
+	// Start shadow engines for fire-and-forget replication
+	if len(n.shadowEngines) > 0 && !n.shadowsStarted {
+		for _, se := range n.shadowEngines {
+			se.Start()
+		}
+		n.shadowsStarted = true
+		n.log.Info("Started shadow engines", "count", len(n.shadowEngines))
+	}
+
 	n.log.Info("Starting execution engine driver")
 	// start driving engine: sync blocks by deriving them from L1 and driving them into the engine
 	if err := n.l2Driver.Start(); err != nil {
@@ -822,6 +901,15 @@ func (n *OpNode) Stop(ctx context.Context) error {
 	}
 
 	var result *multierror.Error
+
+	// Stop shadow engines first (they're fire-and-forget, so errors are non-critical)
+	if n.shadowsStarted && len(n.shadowEngines) > 0 {
+		for _, se := range n.shadowEngines {
+			se.Stop()
+		}
+		n.shadowsStarted = false
+		n.log.Info("Stopped shadow engines")
+	}
 
 	if n.server != nil {
 		if err := n.server.Stop(); err != nil {

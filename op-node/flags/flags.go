@@ -212,6 +212,33 @@ var (
 		Value:    time.Second * 10,
 		Category: RollupCategory,
 	}
+	// Shadow engine flags for fire-and-forget replication to secondary EL endpoints
+	ShadowEngineAddrs = &cli.StringSliceFlag{
+		Name:     "l2.shadow-engines",
+		Usage:    "Comma-separated list of shadow L2 Engine JSON-RPC endpoints for fire-and-forget replication",
+		EnvVars:  prefixEnvVars("L2_SHADOW_ENGINES"),
+		Category: RollupCategory,
+	}
+	ShadowEngineJWTSecrets = &cli.StringSliceFlag{
+		Name:     "l2.shadow-engines.jwt-secrets",
+		Usage:    "Comma-separated paths to JWT secret keys for shadow engines (one per endpoint)",
+		EnvVars:  prefixEnvVars("L2_SHADOW_ENGINES_AUTH"),
+		Category: RollupCategory,
+	}
+	ShadowEngineTimeout = &cli.DurationFlag{
+		Name:     "l2.shadow-engines.timeout",
+		Usage:    "RPC timeout for shadow engine calls",
+		EnvVars:  prefixEnvVars("L2_SHADOW_ENGINES_TIMEOUT"),
+		Value:    time.Second * 5,
+		Category: RollupCategory,
+	}
+	ShadowEngineBufferSize = &cli.IntFlag{
+		Name:     "l2.shadow-engines.buffer",
+		Usage:    "Async call buffer size for shadow engines",
+		EnvVars:  prefixEnvVars("L2_SHADOW_ENGINES_BUFFER"),
+		Value:    100,
+		Category: RollupCategory,
+	}
 	VerifierL1Confs = &cli.Uint64Flag{
 		Name:     "verifier.l1-confs",
 		Usage:    "Number of L1 blocks to keep distance from the L1 head before deriving L2 data from. Reorgs are supported, but may be slow to perform.",
@@ -466,6 +493,10 @@ var optionalFlags = []cli.Flag{
 	L1ChainConfig,
 	L2EngineKind,
 	L2EngineRpcTimeout,
+	ShadowEngineAddrs,
+	ShadowEngineJWTSecrets,
+	ShadowEngineTimeout,
+	ShadowEngineBufferSize,
 	InteropRPCAddr,
 	InteropRPCPort,
 	InteropJWTSecret,

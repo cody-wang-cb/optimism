@@ -74,6 +74,10 @@ func (e *EngineController) OpenBlock(ctx context.Context, parent eth.BlockID, at
 func (e *EngineController) CancelBlock(ctx context.Context, id eth.PayloadInfo) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	// Forward to shadow engines (fire-and-forget)
+	if e.shadowForwarder != nil {
+		e.shadowForwarder.ForwardGetPayload(id)
+	}
 	_, err := e.engine.GetPayload(ctx, id)
 	if err != nil {
 		var rpcErr rpc.Error
@@ -94,6 +98,10 @@ func (e *EngineController) CancelBlock(ctx context.Context, id eth.PayloadInfo) 
 func (e *EngineController) SealBlock(ctx context.Context, id eth.PayloadInfo) (*eth.ExecutionPayloadEnvelope, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	// Forward to shadow engines (fire-and-forget)
+	if e.shadowForwarder != nil {
+		e.shadowForwarder.ForwardGetPayload(id)
+	}
 	envelope, err := e.engine.GetPayload(ctx, id)
 	if err != nil {
 		var rpcErr rpc.Error
