@@ -195,7 +195,7 @@ func TestForwarder(t *testing.T) {
 	se1 := NewShadowEngine("http://shadow1:8551", client1, logger, metrics, time.Second, 10)
 	se2 := NewShadowEngine("http://shadow2:8551", client2, logger, metrics, time.Second, 10)
 
-	forwarder := NewForwarder([]*ShadowEngine{se1, se2})
+	forwarder := NewForwarder([]*ShadowEngine{se1, se2}, nil, logger) // nil conductor = always forward
 	forwarder.Start()
 
 	// Forward all three call types
@@ -212,4 +212,45 @@ func TestForwarder(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return !se1.running.Load() && !se2.running.Load()
 	}, time.Second, 10*time.Millisecond)
+}
+
+// mockConductor implements LeaderCheck for testing
+type mockConductor struct {
+	isLeader bool
+	err      error
+}
+
+func (m *mockConductor) Leader(ctx context.Context) (bool, error) {
+	return m.isLeader, m.err
+}
+
+func TestForwarder_ConductorAware(t *testing.T) {
+	logger := testlog.Logger(t, log.LevelDebug)
+	metrics := &mockMetrics{}
+	client := &mockEngineClient{}
+
+	se := NewShadowEngine("http://shadow:8551", client, logger, metrics, time.Second, 10)
+
+	// Test: not leader - should not forward
+	conductor := &mockConductor{isLeader: false}
+	forwarder := NewForwarder([]*ShadowEngine{se}, conductor, logger)
+	forwarder.Start()
+
+	forwarder.ForwardForkchoiceUpdate(&eth.ForkchoiceState{HeadBlockHash: common.HexToHash("0x1")}, nil)
+	forwarder.ForwardNewPayload(&eth.ExecutionPayload{BlockHash: common.HexToHash("0x2")}, nil)
+	forwarder.ForwardGetPayload(eth.PayloadInfo{ID: eth.PayloadID{1, 2, 3, 4, 5, 6, 7, 8}})
+
+	// Give some time, but nothing should be queued
+	time.Sleep(50 * time.Millisecond)
+	require.Equal(t, 0, client.totalCalls(), "should not forward when not leader")
+
+	// Now become leader
+	conductor.isLeader = true
+	forwarder.ForwardForkchoiceUpdate(&eth.ForkchoiceState{HeadBlockHash: common.HexToHash("0x3")}, nil)
+
+	require.Eventually(t, func() bool {
+		return client.totalCalls() == 1
+	}, time.Second, 10*time.Millisecond, "should forward when leader")
+
+	forwarder.Stop()
 }

@@ -118,6 +118,7 @@ type OpNode struct {
 	l1Source       L1Source                     // L1 Client to fetch data from
 	l2Driver       *driver.Driver               // L2 Engine to Sync
 	l2Source       *sources.EngineClient        // L2 Execution Engine RPC bindings
+	conductor      conductor.SequencerConductor // Conductor for HA leader election
 	shadowEngines  []*shadow.ShadowEngine       // Optional shadow engines for fire-and-forget replication
 	shadowsStarted bool                         // Whether shadow engines have been started
 	server    *oprpc.Server         // RPC server hosting the rollup-node API
@@ -236,7 +237,7 @@ func (n *OpNode) init(ctx context.Context, cfg *config.Config, overrides Initial
 	}
 
 	// initL2 may use side effects to register interop subsystem to the node.EventSystem
-	n.l2Source, n.interopSys, n.l2Driver, n.safeDB, err = initL2(ctx, cfg, n)
+	n.l2Source, n.interopSys, n.l2Driver, n.safeDB, n.conductor, err = initL2(ctx, cfg, n)
 	if err != nil {
 		return fmt.Errorf("failed to init L2: %w", err)
 	}
@@ -248,9 +249,9 @@ func (n *OpNode) init(ctx context.Context, cfg *config.Config, overrides Initial
 	}
 	// Wire shadow forwarder to engine controller if shadow engines are configured
 	if len(n.shadowEngines) > 0 {
-		forwarder := shadow.NewForwarder(n.shadowEngines)
+		forwarder := shadow.NewForwarder(n.shadowEngines, n.conductor, n.log)
 		n.l2Driver.SyncDeriver.Engine.SetShadowForwarder(forwarder)
-		n.log.Info("Shadow forwarder wired to engine controller")
+		n.log.Info("Shadow forwarder wired to engine controller", "conductor_enabled", cfg.ConductorEnabled)
 	}
 
 	n.l1HeadsSub, n.l1SafeSub, n.l1FinalizedSub, err = initL1Handlers(cfg, n)
@@ -551,27 +552,27 @@ func initL1BeaconAPI(ctx context.Context, cfg *config.Config, node *OpNode) (*so
 	}
 }
 
-func initL2(ctx context.Context, cfg *config.Config, node *OpNode) (*sources.EngineClient, interop.SubSystem, *driver.Driver, closableSafeDB, error) {
+func initL2(ctx context.Context, cfg *config.Config, node *OpNode) (*sources.EngineClient, interop.SubSystem, *driver.Driver, closableSafeDB, conductor.SequencerConductor, error) {
 	rpcClient, rpcCfg, err := cfg.L2.Setup(ctx, node.log, &cfg.Rollup, node.metrics)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("failed to setup L2 execution-engine RPC client: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("failed to setup L2 execution-engine RPC client: %w", err)
 	}
 
 	rpcCfg.FetchWithdrawalRootFromState = cfg.FetchWithdrawalRootFromState
 
 	l2Source, err := sources.NewEngineClient(rpcClient, node.log, node.metrics.L2SourceCache, rpcCfg)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("failed to create Engine client: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("failed to create Engine client: %w", err)
 	}
 
 	if err := cfg.Rollup.ValidateL2Config(ctx, l2Source, cfg.Sync.SyncMode == sync.ELSync); err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 
 	indexingMode := false
 	sys, err := cfg.InteropConfig.Setup(ctx, node.log, &node.cfg.Rollup, node.l1Source, l2Source, node.metrics)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("failed to setup interop: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("failed to setup interop: %w", err)
 	} else if sys != nil { // we continue with legacy mode if no interop sub-system is set up.
 		_, indexingMode = sys.(*indexing.IndexingMode)
 		node.eventSys.Register("interop", sys)
@@ -585,7 +586,7 @@ func initL2(ctx context.Context, cfg *config.Config, node *OpNode) (*sources.Eng
 	// if altDA is not explicitly activated in the node CLI, the config + any error will be ignored.
 	rpCfg, err := cfg.Rollup.GetOPAltDAConfig()
 	if cfg.AltDA.Enabled && err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("failed to get altDA config: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("failed to get altDA config: %w", err)
 	}
 	altDA := altda.NewAltDA(node.log, cfg.AltDA, rpCfg, node.metrics.AltDAMetrics)
 	var safeDB closableSafeDB
@@ -593,14 +594,14 @@ func initL2(ctx context.Context, cfg *config.Config, node *OpNode) (*sources.Eng
 		node.log.Info("Safe head database enabled", "path", cfg.SafeDBPath)
 		safeDB, err = safedb.NewSafeDB(node.log, cfg.SafeDBPath)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("failed to create safe head database at %v: %w", cfg.SafeDBPath, err)
+			return nil, nil, nil, nil, nil, fmt.Errorf("failed to create safe head database at %v: %w", cfg.SafeDBPath, err)
 		}
 	} else {
 		safeDB = safedb.Disabled
 	}
 
 	if cfg.Rollup.ChainOpConfig == nil {
-		return nil, nil, nil, nil, fmt.Errorf("cfg.Rollup.ChainOpConfig is nil. Please see https://github.com/ethereum-optimism/optimism/releases/tag/op-node/v1.11.0: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("cfg.Rollup.ChainOpConfig is nil. Please see https://github.com/ethereum-optimism/optimism/releases/tag/op-node/v1.11.0: %w", err)
 	}
 
 	l2Driver := driver.NewDriver(node.eventSys, node.eventDrain, &cfg.Driver, &cfg.Rollup, cfg.L1ChainConfig, cfg.DependencySet, l2Source, node.l1Source,
@@ -613,7 +614,7 @@ func initL2(ctx context.Context, cfg *config.Config, node *OpNode) (*sources.Eng
 		}
 	}
 
-	return l2Source, sys, l2Driver, safeDB, nil
+	return l2Source, sys, l2Driver, safeDB, sequencerConductor, nil
 }
 
 // initShadowEngines creates shadow engine clients for fire-and-forget replication.
